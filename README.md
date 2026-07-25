@@ -123,8 +123,34 @@ before the full 2024+ backfill:
 - **Error grows and flips sign with lead time**, from +0.65 °F at lead 0 to
   −2.65 °F at lead 7.
 
-These are provisional: the window is missing August through November entirely,
-so nothing here reflects autumn.
+## Does correcting actually help?
+
+`microclimate backtest` fits corrections on an earlier period and scores them on
+a later one they never saw. Skill is versus the raw forecast: positive helped,
+negative made it worse. Fitted on 2024-01 → 2025-10, scored on 2025-10 → 2026-07.
+
+| Variable | Raw MAE | Corrected MAE | Skill | Persistence |
+|---|---|---|---|---|
+| Temperature (lead 1) | 2.80 °F | 2.59 °F | **+0.07** | −1.60 |
+| Wind (lead 1) | 7.73 mph | 2.65 mph | **+0.66** | **+0.72** |
+
+Three things this settled that reasoning could not:
+
+- **A single mean correction makes day-ahead temperature *worse*** (skill −0.03).
+  The seasonal and diurnal structure is the whole signal; the average of it is
+  actively misleading. The headline numbers above are summary statistics, not a
+  model.
+- **The harmonic fit matches the bucket table with 13 coefficients instead of
+  288 cells**, and edges ahead across all leads. Fewer parameters, same skill,
+  far less to overfit.
+- **For wind, plain persistence beats every correction we have.** Yesterday's
+  wind at this hour predicts today's better than a bias-corrected grid forecast
+  does. The +7 mph offset is real and worth removing, but past that the forecast
+  adds little for wind at this site. Temperature is the opposite — persistence
+  is far worse than the forecast, so the model genuinely knows something.
+
+Provisional: one test period, and the wind result deserves a look at whether the
+anemometer is obstructed rather than merely sheltered.
 
 ## Caveats
 

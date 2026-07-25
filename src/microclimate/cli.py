@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from . import align, store
+from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .config import (
     AmbientCredentials,
@@ -211,18 +212,7 @@ def bias(
     except ConfigError as error:
         _fail(str(error))
 
-    with store.connect() as conn:
-        station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
-        forecasts = conn.execute("SELECT * FROM forecasts ORDER BY valid_time").df()
-
-    if station.empty or forecasts.empty:
-        _fail("Need both station and forecast data — run the backfill commands first.")
-
-    paired = align.pair(align.hourly_station(station), forecasts)
-    if paired.empty:
-        _fail("No overlapping hours between station and forecast data.")
-
-    paired = align.add_time_features(paired, location.timezone)
+    paired = _load_paired(location)
 
     console.print(f"\n[bold]Overall forecast error[/bold] (forecast − actual)")
     _print_frame(bias_analysis.overall(paired))
@@ -231,6 +221,41 @@ def bias(
         console.print(f"\n[bold]{variable} error by {by}, lead {lead}d[/bold]")
         breakdown = bias_analysis.by_group(paired, by, variable)
         _print_frame(breakdown[breakdown["lead_days"] == lead])
+
+
+@app.command()
+def backtest(
+    variable: str = typer.Option("temp_f", help="Variable to correct."),
+    train_end: str = typer.Option(
+        None, help="ISO date ending the training period, e.g. 2025-12-31."
+    ),
+    train_fraction: float = typer.Option(
+        0.7, help="Fraction of the time span used for training, if no --train-end."
+    ),
+    lead: int = typer.Option(None, help="Show only this lead time."),
+) -> None:
+    """Score corrections on held-out data they were never fitted to."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    paired = _load_paired(location)
+    results, info = backtest_analysis.evaluate(
+        paired, variable=variable, train_fraction=train_fraction, train_end=train_end
+    )
+
+    console.print(
+        f"\n[bold]{info['variable']}[/bold] — fitted on "
+        f"{info['train_start'][:10]} → {info['train_end'][:10]} "
+        f"({info['train_rows']:,} rows), scored on "
+        f"{info['test_start'][:10]} → {info['test_end'][:10]} "
+        f"({info['test_rows']:,} rows)"
+    )
+    console.print("[dim]Skill is versus the raw forecast: >0 helped, <0 made it worse.[/dim]\n")
+
+    shown = results if lead is None else results[results["lead_days"].isin([lead, "all"])]
+    _print_frame(shown[["method", "lead_days", "n", "bias", "mae", "rmse", "skill"]])
 
 
 @app.command()
@@ -243,6 +268,22 @@ def export(
         for table in ("obs_station", "obs_air", "forecasts"):
             store.export_parquet(conn, table, target / f"{table}.parquet")
     console.print(f"[green]Exported to {target}[/green]")
+
+
+def _load_paired(location: Location) -> pd.DataFrame:
+    """Observations and forecasts joined into one row per (hour, lead)."""
+    with store.connect() as conn:
+        station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
+        forecasts = conn.execute("SELECT * FROM forecasts ORDER BY valid_time").df()
+
+    if station.empty or forecasts.empty:
+        _fail("Need both station and forecast data — run the backfill commands first.")
+
+    paired = align.pair(align.hourly_station(station), forecasts)
+    if paired.empty:
+        _fail("No overlapping hours between station and forecast data.")
+
+    return align.add_time_features(paired, location.timezone)
 
 
 def _print_coverage(conn) -> None:

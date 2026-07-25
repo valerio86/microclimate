@@ -106,5 +106,6 @@ def add_time_features(frame: pd.DataFrame, timezone: str) -> pd.DataFrame:
     local = pd.to_datetime(out["valid_time"], utc=True).dt.tz_convert(timezone)
     out["local_hour"] = local.dt.hour
     out["local_month"] = local.dt.month
+    out["local_doy"] = local.dt.dayofyear
     out["local_date"] = local.dt.date
     return out
