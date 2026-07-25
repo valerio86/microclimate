@@ -15,10 +15,12 @@ error — the same idea as Model Output Statistics (MOS), fit to one location.
 | Open-Meteo forecast archive | the public forecast baseline | 2024-01-01 → now |
 | PurpleAir | air quality | from 2026-07-24 (install date) |
 
-The station has recorded since 2022 and both Open-Meteo endpoints reach back
-that far, so the window can be widened later by re-running the backfills with
-an earlier `--start`; they are resumable and idempotent. Starting at 2024 keeps
-the first pull short while still covering two full seasonal cycles.
+The station has recorded since 2022 and Ambient still serves that history, but
+**2024-01-01 is a data-quality boundary, not a convenience one**: the station
+was not correctly configured for its first couple of years, so the earlier
+readings are unreliable. Bad ground truth is worse than none here — it would
+bias the corrections while still looking plausible in aggregate. Widen the
+window only if that early data is revisited and validated.
 
 The WS-2902 has no local API — readings are read back from Ambient's cloud, at
 288 records (one day) per request.
@@ -106,6 +108,23 @@ src/microclimate/
   high here.
 - Wind direction is averaged circularly — a plain mean of 350° and 10° gives
   180°, the opposite of the right answer.
+
+## Early findings
+
+From the first 8 months of paired data (Nov 2025 – Jul 2026, 5,676 hours),
+before the full 2024+ backfill:
+
+- **Wind is the big one.** Open-Meteo runs ~+6.8 mph on sustained wind and
+  ~+12.5 mph on gusts, consistently at every lead time. That is the signature
+  of a sheltered site being compared against open-terrain 10 m wind.
+- **Temperature bias is diurnal, and the daily average hides it.** Near-zero
+  mean error at lead 1, but a steady +1.1 to +1.5 °F overnight — the model runs
+  warm at night, consistent with cold-air drainage in hilly terrain.
+- **Error grows and flips sign with lead time**, from +0.65 °F at lead 0 to
+  −2.65 °F at lead 7.
+
+These are provisional: the window is missing August through November entirely,
+so nothing here reflects autumn.
 
 ## Caveats
 
