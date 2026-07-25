@@ -29,7 +29,7 @@ app = typer.Typer(
 )
 console = Console()
 
-DEFAULT_START = date(2022, 1, 1)
+DEFAULT_START = date(2024, 1, 1)
 
 
 def _fail(message: str) -> None:

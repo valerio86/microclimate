@@ -9,11 +9,16 @@ error — the same idea as Model Output Statistics (MOS), fit to one location.
 
 ## Sources
 
-| Source | Role | History |
+| Source | Role | Backfill window |
 |---|---|---|
-| Ambient Weather WS-2902 (via AWN cloud API) | ground truth observations | since 2022 |
-| Open-Meteo forecast archive | the public forecast baseline | since 2022 |
-| PurpleAir | air quality | since 2026-07-24 |
+| Ambient Weather WS-2902 (via AWN cloud API) | ground truth observations | 2024-01-01 → now |
+| Open-Meteo forecast archive | the public forecast baseline | 2024-01-01 → now |
+| PurpleAir | air quality | from 2026-07-24 (install date) |
+
+The station has recorded since 2022 and both Open-Meteo endpoints reach back
+that far, so the window can be widened later by re-running the backfills with
+an earlier `--start`; they are resumable and idempotent. Starting at 2024 keeps
+the first pull short while still covering two full seasonal cycles.
 
 The WS-2902 has no local API — readings are read back from Ambient's cloud, at
 288 records (one day) per request.
@@ -60,15 +65,15 @@ Fill in `.env`:
 ```
 
 ```bash
-.venv/bin/microclimate backfill-station --start 2022-01-01
+.venv/bin/microclimate backfill-station --start 2024-01-01
 ```
 
 Walks backward through history at ~1 request/second (Ambient's rate limit), so
-roughly 25 minutes for four years. It is resumable — interrupt it freely and
+roughly 17 minutes for the ~940 days back to 2024. It is resumable — interrupt it freely and
 re-run to continue from the oldest record stored.
 
 ```bash
-.venv/bin/microclimate backfill-forecast --start 2022-01-01
+.venv/bin/microclimate backfill-forecast --start 2024-01-01
 ```
 
 ```bash
