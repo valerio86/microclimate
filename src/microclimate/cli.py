@@ -248,8 +248,8 @@ def export(
 def _print_coverage(conn) -> None:
     table = Table(title="Stored data")
     table.add_column("Table")
-    table.add_column("From")
-    table.add_column("To")
+    table.add_column("From (UTC)")
+    table.add_column("To (UTC)")
     table.add_column("Rows", justify="right")
 
     for name, time_column in (
@@ -258,10 +258,13 @@ def _print_coverage(conn) -> None:
         ("forecasts", "valid_time"),
     ):
         first, last, count = store.coverage(conn, name, time_column)
+        # DuckDB hands TIMESTAMPTZ back in the machine's local zone, so a row
+        # stored at 2024-01-01T00:00Z would otherwise print as 2023-12-31 and
+        # read like the backfill overshot its start date.
         table.add_row(
             name,
-            f"{first:%Y-%m-%d}" if first else "—",
-            f"{last:%Y-%m-%d}" if last else "—",
+            f"{first.astimezone(timezone.utc):%Y-%m-%d}" if first else "—",
+            f"{last.astimezone(timezone.utc):%Y-%m-%d}" if last else "—",
             f"{count:,}",
         )
     console.print(table)
