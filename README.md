@@ -149,8 +149,32 @@ Three things this settled that reasoning could not:
   adds little for wind at this site. Temperature is the opposite — persistence
   is far worse than the forecast, so the model genuinely knows something.
 
-Provisional: one test period, and the wind result deserves a look at whether the
-anemometer is obstructed rather than merely sheltered.
+### Regime conditioning
+
+Calendar position is only a proxy for the physics. Conditioning on the forecast's
+own cloud cover and wind speed — both known ahead of time — beats calendar alone
+(temperature lead 1: MAE 2.50 vs 2.59, skill 0.10 vs 0.07), and the mechanism
+holds up when inspected directly:
+
+| Overnight conditions | Temperature bias | n |
+|---|---|---|
+| Clear + calm | **+4.58 °F** | 666 |
+| Cloudy + calm | +2.66 °F | 754 |
+| Clear + windy | −0.72 °F | 98 |
+| Cloudy + windy | −0.19 °F | 1,172 |
+
+This is cold-air pooling: on calm nights the surface decouples from the air above
+and cold air settles; wind mixes it away. The "+2.0 °F overnight" headline is an
+average of +4.6 and −0.2, and describes neither.
+
+### Open question: the anemometer reads about half
+
+The station sits on an 8 ft mast in an open field. The log wind profile puts the
+expected ratio to Open-Meteo's 10 m wind at **0.69–0.80**. Observed is **0.28**,
+and **0.35 even above 15 mph** where a start-up threshold is irrelevant; gusts
+read 0.34, and the highest gust in 2.5 years is 32 mph. Siting does not explain a
+shortfall that size — worth a physical check of the cups and bearing before
+trusting any wind correction.
 
 ## Caveats
 

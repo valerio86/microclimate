@@ -184,6 +184,88 @@ class HarmonicCorrector(Corrector):
         return out
 
 
+def _column(frame: pd.DataFrame, name: str, default: float) -> np.ndarray:
+    """A numeric column as an array, falling back to `default` if absent or null."""
+    if name not in frame.columns:
+        return np.full(len(frame), default, dtype=float)
+    values = pd.to_numeric(frame[name], errors="coerce").fillna(default)
+    return values.to_numpy(dtype=float)
+
+
+@dataclass
+class RegimeCorrector(Corrector):
+    """Harmonic basis conditioned on the forecast weather regime.
+
+    Calendar position is only a proxy. What actually drives the overnight warm
+    bias is cold air pooling, which happens on *clear, calm* nights and not on
+    cloudy or windy ones — August is merely where those nights cluster. This
+    conditions on the mechanism directly, using two predictors the forecast
+    itself supplies (so they are known ahead of time, and nothing leaks):
+
+        clear = 1 - cloud_cover/100
+        calm  = exp(-forecast wind / 5 mph)
+
+    Both enter on their own and crossed with the first diurnal harmonic, which
+    is what lets the *size* of the day-night swing vary by regime instead of
+    being fixed. Their product is the inversion-prone case: clear and calm.
+    """
+
+    n_diurnal: int = 2
+    n_annual: int = 2
+    name: str = "regime"
+    _coefficients: dict = field(default_factory=dict)
+
+    def _design(self, frame: pd.DataFrame) -> np.ndarray:
+        base = harmonic_design(
+            frame["local_hour"].to_numpy(dtype=float),
+            frame["local_doy"].to_numpy(dtype=float),
+            self.n_diurnal,
+            self.n_annual,
+            interaction=True,
+        )
+        cloud = _column(frame, "cloud_cover", 50.0)
+        wind = _column(frame, "wind_mph_forecast", 8.0)
+        clear = (1 - cloud / 100).clip(0, 1)
+        calm = np.exp(-wind / 5.0)
+
+        hours = frame["local_hour"].to_numpy(dtype=float)
+        stable = clear * calm  # clear and calm together: the inversion case
+
+        # Cross each regime feature with the full diurnal basis, not just the
+        # first harmonic — a bias confined to the small hours has a sharper
+        # shape than one sinusoid can describe.
+        diurnal = [np.ones(len(hours))]
+        for k in range(1, self.n_diurnal + 1):
+            diurnal += [
+                np.sin(2 * np.pi * k * hours / 24),
+                np.cos(2 * np.pi * k * hours / 24),
+            ]
+
+        crossed = [
+            regime * shape for regime in (clear, calm, stable) for shape in diurnal
+        ]
+        return np.column_stack([base, *crossed])
+
+    def fit(self, train: pd.DataFrame, error_column: str) -> RegimeCorrector:
+        for lead, group in train.groupby("lead_days"):
+            clean = group.dropna(subset=[error_column])
+            if clean.empty:
+                continue
+            self._coefficients[lead], *_ = np.linalg.lstsq(
+                self._design(clean), clean[error_column].to_numpy(dtype=float), rcond=None
+            )
+        return self
+
+    def predict(self, frame: pd.DataFrame) -> np.ndarray:
+        out = np.zeros(len(frame))
+        for lead, group in frame.groupby("lead_days"):
+            coefficients = self._coefficients.get(lead)
+            if coefficients is None:
+                continue
+            out[frame["lead_days"].to_numpy() == lead] = self._design(group) @ coefficients
+        return out
+
+
 # --------------------------------------------------------------------------
 # Scoring
 # --------------------------------------------------------------------------
@@ -249,7 +331,12 @@ def evaluate(
         raise ValueError("Split produced an empty train or test set")
 
     if correctors is None:
-        correctors = [ConstantCorrector(), BucketCorrector(), HarmonicCorrector()]
+        correctors = [
+            ConstantCorrector(),
+            BucketCorrector(),
+            HarmonicCorrector(),
+            RegimeCorrector(),
+        ]
 
     raw = test[error_column].to_numpy(dtype=float)
     columns: dict[str, np.ndarray] = {"raw forecast": raw}

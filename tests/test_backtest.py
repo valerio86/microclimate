@@ -116,6 +116,47 @@ def test_harmonic_design_shape_and_interaction_terms():
     assert with_interaction.shape == (24, 1 + 4 + 4 + 4)
 
 
+def test_regime_corrector_learns_a_regime_dependent_bias():
+    # The physical hypothesis in miniature: a warm night-time bias that only
+    # appears when it is clear and calm. Calendar alone cannot express this,
+    # because clear nights and cloudy nights share the same hour and date.
+    rng = np.random.default_rng(1)
+
+    def build(days):
+        data = synthetic(days=days)
+        cloud = rng.uniform(0, 100, len(data))
+        data["cloud_cover"] = cloud
+        data["wind_mph_forecast"] = rng.uniform(0, 8, len(data))
+        clear = 1 - cloud / 100
+        hours = data["local_hour"].to_numpy(dtype=float)
+        # The physical hypothesis, stated exactly: the forecast runs warm at
+        # night and cool by day, and the SIZE of that swing depends on how
+        # clear it is (clear skies -> radiative cooling -> cold air pools).
+        # Calendar alone can only learn the average over clear and cloudy
+        # nights, because both share the same hour and date.
+        error = 3.0 * clear * np.cos(2 * np.pi * hours / 24)
+        data["temp_f_error"] = error
+        data["temp_f_forecast"] = data["temp_f_actual"] + error
+        return data
+
+    results, _ = bt.evaluate(
+        build(500), correctors=[bt.HarmonicCorrector(), bt.RegimeCorrector()]
+    )
+    skill = {r.method: r.skill for r in results[results.lead_days == "all"].itertuples()}
+
+    assert skill["regime"] > 0.8, "regime features should capture a regime-driven bias"
+    assert skill["regime"] > skill["harmonic"] + 0.3, "should clearly beat calendar alone"
+
+
+def test_regime_corrector_tolerates_missing_features():
+    data = synthetic(days=200, bias_fn=lambda f: np.full(len(f), 2.0))
+    # No cloud_cover or wind_mph_forecast columns at all.
+    results, _ = bt.evaluate(data, correctors=[bt.RegimeCorrector()])
+
+    row = results[(results.method == "regime") & (results.lead_days == "all")].iloc[0]
+    assert not np.isnan(row["mae"])
+
+
 def test_evaluate_rejects_an_empty_split():
     data = synthetic(days=10)
     with pytest.raises(ValueError):
