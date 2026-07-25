@@ -13,6 +13,7 @@ from rich.table import Table
 from . import align, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
+from .analysis import frost as frost_analysis
 from .config import (
     AmbientCredentials,
     ConfigError,
@@ -256,6 +257,55 @@ def backtest(
 
     shown = results if lead is None else results[results["lead_days"].isin([lead, "all"])]
     _print_frame(shown[["method", "lead_days", "n", "bias", "mae", "rmse", "skill"]])
+
+
+@app.command("frost-skill")
+def frost_skill(
+    lead: int = typer.Option(1, help="Forecast lead time in days to assess."),
+    threshold: float = typer.Option(32.0, help="Temperature defining a frost night."),
+    train_end: str = typer.Option(None, help="ISO date ending the training period."),
+) -> None:
+    """Score the yes/no frost call on held-out nights."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    paired = _load_paired(location)
+    at_lead = paired[paired["lead_days"] == lead].dropna(subset=["temp_f_error"])
+    if at_lead.empty:
+        _fail(f"No paired data at lead {lead}.")
+
+    train, test = backtest_analysis.chronological_split(at_lead, train_end=train_end)
+    corrector = backtest_analysis.RegimeCorrector().fit(train, "temp_f_error")
+
+    nights = frost_analysis.nightly_minima(
+        test, location.timezone, corrections=corrector.predict(test)
+    )
+    if nights.empty:
+        _fail("No complete nights in the held-out period.")
+
+    summary = frost_analysis.summarize(nights, threshold)
+    console.print(
+        f"\n[bold]Frost call at lead {lead}d[/bold] — {summary['nights']:,} held-out nights, "
+        f"{summary['frost_nights']:,} with frost ({summary['base_rate']:.0%})"
+    )
+    console.print(
+        f"[dim]Overnight minimum error: raw {summary['raw_bias_f']:+.2f} °F bias / "
+        f"{summary['raw_mae_f']:.2f} MAE, corrected {summary['corrected_bias_f']:+.2f} / "
+        f"{summary['corrected_mae_f']:.2f}[/dim]\n"
+    )
+
+    curve = frost_analysis.skill_curve(nights, threshold=threshold)
+    _print_frame(
+        curve[
+            ["warn_at", "forecast", "hits", "misses", "false_alarms", "pod", "far", "csi", "pss"]
+        ]
+    )
+    console.print(
+        "[dim]pod = frosts caught; far = warnings that were wrong; "
+        "pss = hit rate − false-alarm rate (0 = no skill).[/dim]"
+    )
 
 
 @app.command()
