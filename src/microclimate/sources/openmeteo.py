@@ -37,7 +37,11 @@ VARIABLES = {
     "wind_speed_10m": "wind_mph",
     "wind_gusts_10m": "gust_mph",
     "wind_direction_10m": "wind_dir_deg",
-    "surface_pressure": "pressure_hpa",
+    # Sea-level-adjusted, to match the station's `baromrelin`. Using
+    # `surface_pressure` instead compares against pressure at 534 m and
+    # produces a flat ~56 hPa offset that looks like a forecast bias but is
+    # purely a reference mismatch.
+    "pressure_msl": "pressure_hpa",
     "precipitation": "precip_in",
     "cloud_cover": "cloud_cover",
     "shortwave_radiation": "solar_wm2",
