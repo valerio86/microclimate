@@ -126,21 +126,34 @@ class AmbientClient:
         start: datetime,
         end: datetime | None = None,
         on_page: Callable[[datetime, int], None] | None = None,
+        max_gap_days: int = 45,
     ) -> Iterator[list[dict]]:
         """Walk history backward from `end` to `start`, yielding pages.
 
         Yields raw record dicts so the caller decides how to normalize and
         store them; `on_page` is called with (oldest timestamp, record count)
         after each page for progress reporting.
+
+        An empty page means the station reported nothing in that window, which
+        is an outage far more often than it is the start of the record — power
+        cuts, console resets, and dead console batteries all produce multi-day
+        holes. So a gap is stepped over a day at a time, and the walk stops
+        only after `max_gap_days` of continuous silence.
         """
         cursor = (end or datetime.now(timezone.utc)).astimezone(timezone.utc)
         start = start.astimezone(timezone.utc)
+        empty_days = 0
 
         while cursor > start:
             page = self.fetch_page(cursor)
             if not page:
-                return  # No more history — the station's record begins here.
+                empty_days += 1
+                if empty_days > max_gap_days:
+                    return  # Long silence — treat as the start of the record.
+                cursor -= timedelta(days=1)
+                continue
 
+            empty_days = 0
             oldest_ms = min(record["dateutc"] for record in page)
             oldest = datetime.fromtimestamp(oldest_ms / 1000, tz=timezone.utc)
 

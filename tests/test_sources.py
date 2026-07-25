@@ -1,9 +1,53 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
 
 from microclimate.sources import ambient, openmeteo
+
+
+def _client_with_data_on(days: set[date]) -> ambient.AmbientClient:
+    """A client whose history has records only on `days` — everything else is
+    an outage. Built without __init__ so no network or credentials are used."""
+    client = ambient.AmbientClient.__new__(ambient.AmbientClient)
+
+    def fake_fetch_page(end, limit=ambient.MAX_RECORDS_PER_CALL):
+        if end.date() not in days:
+            return []
+        midnight = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
+        return [{"dateutc": int(midnight.timestamp() * 1000), "tempf": 40.0}]
+
+    client.fetch_page = fake_fetch_page
+    return client
+
+
+def test_iter_history_steps_over_an_outage():
+    # Regression: a multi-day station outage used to end the backfill early,
+    # silently truncating years of history that were still available.
+    client = _client_with_data_on({date(2024, 1, 10), date(2024, 1, 5)})
+
+    pages = list(
+        client.iter_history(
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 10, 12, tzinfo=timezone.utc),
+        )
+    )
+
+    assert len(pages) == 2, "should have crossed the 4-day gap to the older data"
+
+
+def test_iter_history_gives_up_after_a_long_silence():
+    client = _client_with_data_on({date(2024, 3, 1)})
+
+    pages = list(
+        client.iter_history(
+            start=datetime(2023, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 3, 1, 12, tzinfo=timezone.utc),
+            max_gap_days=10,
+        )
+    )
+
+    assert len(pages) == 1  # stops rather than crawling a year of nothing
 
 
 def test_ambient_to_frame_maps_and_converts():
