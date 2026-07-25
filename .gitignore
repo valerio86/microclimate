@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+*.key
+
+# Data — regenerable, and large
+data/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
