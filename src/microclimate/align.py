@@ -47,24 +47,38 @@ def hourly_station(station: pd.DataFrame) -> pd.DataFrame:
 
     frame = station.copy()
     frame["ts"] = pd.to_datetime(frame["ts"], utc=True)
+    frame = frame.sort_values("ts")
+
+    # Rain must come from the daily accumulator, differenced.
+    #
+    # The obvious-looking source, `hourlyrainin`, is a *trailing 60-minute*
+    # total, so rain falling at 10:30-11:30 appears in both the 10:00 and the
+    # 11:00 clock hour. Taking the hourly maximum of it double-counts, which
+    # inflated station totals to roughly twice the forecast. Differencing the
+    # daily total instead gives genuine per-interval increments; the daily
+    # counter resets at local midnight, so negative steps are dropped.
+    if "rain_daily_in" in frame.columns:
+        increments = frame["rain_daily_in"].diff()
+        frame["rain_in"] = increments.where(increments > 0, 0.0).fillna(0.0)
+    else:
+        frame["rain_in"] = 0.0
+
     grouped = frame.set_index("ts").resample("1h")
 
-    out = grouped.agg(
-        {
-            "temp_f": "mean",
-            "dewpoint_f": "mean",
-            "rh": "mean",
-            "wind_mph": "mean",
-            "gust_mph": "max",
-            "pressure_hpa": "mean",
-            "solar_wm2": "mean",
-            "uv": "mean",
-            # `hourlyrainin` is already a trailing-60-minute total, so the
-            # largest value seen in the hour approximates that hour's rain.
-            "rain_hourly_in": "max",
-        }
-    )
-    out["wind_dir_deg"] = grouped["wind_dir_deg"].apply(circular_mean_deg)
+    how = {
+        "temp_f": "mean",
+        "dewpoint_f": "mean",
+        "rh": "mean",
+        "wind_mph": "mean",
+        "gust_mph": "max",
+        "pressure_hpa": "mean",
+        "solar_wm2": "mean",
+        "uv": "mean",
+        "rain_in": "sum",
+    }
+    out = grouped.agg({c: h for c, h in how.items() if c in frame.columns})
+    if "wind_dir_deg" in frame.columns:
+        out["wind_dir_deg"] = grouped["wind_dir_deg"].apply(circular_mean_deg)
     out["n_readings"] = grouped["temp_f"].count()
 
     return out.reset_index().rename(columns={"ts": "valid_time"})

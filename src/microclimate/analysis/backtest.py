@@ -228,6 +228,13 @@ class RegimeCorrector(Corrector):
         clear = (1 - cloud / 100).clip(0, 1)
         calm = np.exp(-wind / 5.0)
 
+        # Daytime error scales with sunshine — partly the radiation shield
+        # reading high, partly a genuinely sunnier, drier field than the grid
+        # cell average. The two are not separable from forecast comparison
+        # (see shield.py), and for correcting the forecast they need not be:
+        # the model only has to know that strong sun means a warmer reading.
+        solar = _column(frame, "solar_wm2_forecast", 0.0).clip(min=0) / 1000.0
+
         hours = frame["local_hour"].to_numpy(dtype=float)
         stable = clear * calm  # clear and calm together: the inversion case
 
@@ -241,8 +248,12 @@ class RegimeCorrector(Corrector):
                 np.cos(2 * np.pi * k * hours / 24),
             ]
 
+        # Sunshine also crossed with ventilation, since the warming it causes
+        # is carried away by wind whichever mechanism produces it.
         crossed = [
-            regime * shape for regime in (clear, calm, stable) for shape in diurnal
+            regime * shape
+            for regime in (clear, calm, stable, solar, solar * calm)
+            for shape in diurnal
         ]
         return np.column_stack([base, *crossed])
 

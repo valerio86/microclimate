@@ -194,6 +194,50 @@ occurred at any point overnight — and it overstated the miss rate. The nightly
 minimum is far more informative than any single hour, and the night-level
 numbers above supersede it.
 
+### Instrument corrections
+
+Ground truth has to be trusted before anything is fitted to it. Three defects
+found, in decreasing order of how well they are pinned down:
+
+**Temperature — radiation shield, ~2.9 °F at full sun.** The passive shield
+heats in sunlight. Isolated by response time: filtering out everything slower
+than 90 minutes, the fast wiggles in temperature track those in solar radiation
+with a peak at a **5-minute lag worth 2.9 °F per 1000 W/m²**, gone by 25 minutes.
+Nothing with the thermal mass of a field responds that fast, so that component is
+instrumental. Notably, the *total* solar-correlated warmth in the forecast
+residual is nearer 8 °F — so only about a third is the shield, and the rest is a
+real land-surface difference between a mown open field and a grid cell averaging
+in forest and water. See `shield.py`; the correction is opt-in and reversible.
+
+**Rain — fixed in code.** `hourlyrainin` is a trailing 60-minute total, so taking
+its hourly maximum counted the same rainfall in two adjacent clock hours and
+inflated station totals to roughly twice the forecast. Rain is now differenced
+from the daily accumulator. Station/forecast went from 1.99 to 0.61, which reads
+as ordinary gauge under-catch: 0.71 in spring and summer, **0.29 in winter**,
+where an unheated tipping bucket does not register snow until it melts. Treat
+winter precipitation volume as unusable.
+
+**Solar — the pyranometer is obstructed, mostly to the east.** Comparing clear-sky
+ratios at *matched solar elevation* (equal air mass, so any east/west gap is
+obstruction rather than geometry) over 21 clear days:
+
+| Solar elevation | Morning (E) | Afternoon (W) | Gap |
+|---|---|---|---|
+| 15–20° | 0.23 | 0.66 | +0.43 |
+| 20–25° | 0.32 | 0.74 | +0.42 |
+| 45–50° | 0.93 | 0.84 | −0.10 |
+| 55–60° | 0.82 | 0.82 | 0.00 |
+
+Mornings below 25° elevation get a third to a half of the afternoon equivalent —
+a hill or treeline on the eastern horizon. A smaller, broad afternoon deficit
+also shows at mid elevations. So **observed solar under-reports true insolation**,
+and part of the apparent "model over-forecasts solar radiation" is our own shaded
+sensor. Corrections use *forecast* solar, so they are unaffected; do not use
+observed `solar_wm2` as a model feature without accounting for this.
+
+**Wind — see below.** Unresolved, and the reason the shield's ventilation term
+is still a literature value rather than a measured one.
+
 ### Open question: the anemometer reads about half
 
 The station sits on an 8 ft mast in an open field. The log wind profile puts the
