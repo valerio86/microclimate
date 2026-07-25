@@ -1,9 +1,13 @@
 """PurpleAir API client.
 
 Secondary source for now: the sensor was installed 2026-07-24, so it has no
-history to train on yet. It still gets logged from day one so that air quality
-becomes usable later — and PM2.5 is a genuinely useful forecast target once
+history to train on yet. PM2.5 becomes a genuinely useful forecast target once
 there's a season or two behind it (smoke, inversions, wood smoke at night).
+
+No scheduled polling is needed to preserve data. PurpleAir stores sensor
+history in its own cloud — network-wide back to 2016 — so the record can be
+pulled retroactively at any point via `history()`. Sensor owners read their own
+sensor for free under PurpleAir's points-based API billing.
 
 Note the two PM2.5 flavors: `_atm` is the reading most dashboards show, `_cf_1`
 reads high outdoors but is the input the EPA correction expects. Store both;
@@ -67,7 +71,12 @@ class PurpleAirClient:
     def history(
         self, start: datetime, end: datetime, average_minutes: int = 60
     ) -> pd.DataFrame:
-        """Historical readings. Requires a key with history access."""
+        """Historical readings for one time range.
+
+        PurpleAir caps rows per response, so a long backfill needs to be walked
+        in chunks the way the Ambient client does. Not yet implemented — this
+        returns a single page, which is enough while the sensor is days old.
+        """
         response = self._client.get(
             f"/sensors/{self._credentials.sensor_index}/history",
             params={
