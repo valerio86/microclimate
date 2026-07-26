@@ -337,6 +337,86 @@ def crossval(
     )
 
 
+@app.command()
+def refresh(
+    forecast_days: int = typer.Option(
+        14, help="Refetch at least this many recent days of forecasts."
+    ),
+    max_catchup_days: int = typer.Option(
+        90, help="Cap on how far back a gap will be filled in one run."
+    ),
+    models: str = typer.Option(DEFAULT_MODELS, help="Models to refresh."),
+    quiet: bool = typer.Option(
+        False, help="Print only warnings and errors — for scheduled runs."
+    ),
+) -> None:
+    """Bring station readings and forecasts up to date.
+
+    Designed to be run unattended on a schedule. Recent forecast days are always
+    refetched rather than only the missing ones: the previous-runs archive fills
+    in longer lead times over the following days, so a day fetched immediately
+    has only its short leads and needs collecting again later.
+    """
+    try:
+        credentials = AmbientCredentials.from_env()
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    def say(message: str) -> None:
+        if not quiet:
+            console.print(message)
+
+    model_list = [value.strip() for value in models.split(",") if value.strip()]
+    started = datetime.now(timezone.utc)
+    station_added = forecast_rows = 0
+
+    try:
+        with store.connect() as conn:
+            _, latest_station, _ = store.coverage(conn, "obs_station")
+            with AmbientClient(credentials) as client:
+                start = latest_station or (started - timedelta(days=2))
+                for page in client.iter_history(start=start, end=started):
+                    station_added += store.upsert(conn, "obs_station", to_frame(page))
+            say(f"Station: {station_added:,} readings added or refreshed.")
+
+            _, latest_forecast, _ = store.coverage(conn, "forecasts", "valid_time")
+            floor = (started - timedelta(days=max_catchup_days)).date()
+            wanted = (started - timedelta(days=forecast_days)).date()
+            if latest_forecast is not None:
+                wanted = min(wanted, latest_forecast.date())
+            begin = max(wanted, floor)
+            end = (started - timedelta(days=1)).date()
+
+            say(f"Forecasts: refreshing {begin} → {end} for {len(model_list)} model(s).")
+            for model in model_list:
+                with OpenMeteoClient(location, model=model) as client:
+                    for frame in client.fetch_range(begin, end):
+                        forecast_rows += store.upsert(conn, "forecasts", frame)
+            say(f"Forecasts: {forecast_rows:,} rows written.")
+
+            _, station_end, _ = store.coverage(conn, "obs_station")
+    except Exception as error:  # noqa: BLE001 — a scheduled run must report, not vanish
+        console.print(f"[red]Refresh failed: {type(error).__name__}: {error}[/red]")
+        raise typer.Exit(code=1)
+
+    # Staleness is the failure that hides: every command keeps working, quietly
+    # answering from older and older data. Say so loudly, even when quiet.
+    if station_end is not None:
+        lag = started - station_end
+        if lag > timedelta(hours=6):
+            console.print(
+                f"[yellow]Warning: newest station reading is {lag.total_seconds() / 3600:.1f} "
+                f"hours old — the station may be offline.[/yellow]"
+            )
+        else:
+            say(f"Station current to {station_end:%Y-%m-%d %H:%M} UTC.")
+
+    say(
+        f"[green]Refresh complete in {(datetime.now(timezone.utc) - started).seconds}s.[/green]"
+    )
+
+
 @app.command("rain-forecast")
 def rain_forecast(
     days: int = typer.Option(5, help="How many days ahead to report."),

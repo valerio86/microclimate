@@ -86,6 +86,24 @@ re-run to continue from the oldest record stored.
 .venv/bin/microclimate status
 ```
 
+## Keeping it current
+
+```bash
+.venv/bin/microclimate refresh
+```
+
+Brings station readings and forecasts up to date in about 20 seconds. Recent
+forecast days are always refetched rather than only the missing ones: the
+previous-runs archive fills in longer lead times over the following days, so a
+day collected immediately has only its short leads and must be collected again.
+
+It warns loudly when the newest station reading is over six hours old, because
+staleness is the failure that hides — every command keeps working, quietly
+answering from older and older data.
+
+To run it daily, see `scripts/com.microclimate.refresh.plist` (macOS launchd,
+06:15 local, logs to `data/refresh.log`). Install instructions are in the file.
+
 ## Layout
 
 ```

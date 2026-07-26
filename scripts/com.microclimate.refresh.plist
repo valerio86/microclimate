@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Daily data refresh for microclimate.
+
+  Install:
+    cp scripts/com.microclimate.refresh.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.microclimate.refresh.plist
+
+  Check it is registered:
+    launchctl list | grep microclimate
+
+  Run it once by hand, without waiting for the schedule:
+    launchctl start com.microclimate.refresh
+
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.microclimate.refresh.plist
+    rm ~/Library/LaunchAgents/com.microclimate.refresh.plist
+
+  WorkingDirectory matters: .env and data/ are both resolved relative to it.
+  If the Mac is asleep at the scheduled time, launchd runs the job on wake.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.microclimate.refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/valerio/Development/microclimate/.venv/bin/microclimate</string>
+        <string>refresh</string>
+        <string>--quiet</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/valerio/Development/microclimate</string>
+
+    <!-- 06:15 local, so the morning rain forecast is built on fresh data. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+
+    <!-- Do not fire on load; the schedule is the only trigger. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/valerio/Development/microclimate/data/refresh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/valerio/Development/microclimate/data/refresh.log</string>
+</dict>
+</plist>
