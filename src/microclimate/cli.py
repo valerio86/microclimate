@@ -33,6 +33,13 @@ console = Console()
 
 DEFAULT_START = date(2024, 1, 1)
 
+# Scored against the station over Sep 2025 - Jun 2026, lead 1: ICON 2.33 F MAE,
+# ECMWF 2.48, GEM 2.42, GFS 2.82. Open-Meteo's `best_match` resolves to GFS at
+# this location, so naming models explicitly is worth more than any correction
+# fitted so far. All three are stored; ICON is the default for analysis.
+DEFAULT_MODELS = "icon_seamless,ecmwf_ifs025,gfs_seamless"
+DEFAULT_SOURCE = "open-meteo:icon_seamless"
+
 
 def _fail(message: str) -> None:
     console.print(f"[red]{message}[/red]")
@@ -143,6 +150,11 @@ def backfill_forecast(
     leads: str = typer.Option(
         "0,1,2,3,5,7", help="Comma-separated forecast lead times in days."
     ),
+    models: str = typer.Option(
+        DEFAULT_MODELS,
+        help="Comma-separated Open-Meteo models. Each is stored separately, so "
+        "their disagreement can be used as an uncertainty signal.",
+    ),
 ) -> None:
     """Backfill Open-Meteo forecasts, including what was predicted N days ahead."""
     try:
@@ -152,23 +164,30 @@ def backfill_forecast(
 
     end_date = (end or datetime.now() - timedelta(days=1)).date()
     lead_list = [int(value) for value in leads.split(",") if value.strip()]
+    model_list = [value.strip() for value in models.split(",") if value.strip()]
 
     console.print(
         f"Fetching forecasts {start.date()} → {end_date} at leads {lead_list} "
-        f"for {location.latitude}, {location.longitude}"
+        f"from {len(model_list)} model(s) for {location.latitude}, {location.longitude}"
     )
 
-    with store.connect() as conn, OpenMeteoClient(location) as client:
+    with store.connect() as conn:
         total = 0
-        with console.status("Fetching…") as status:
-            for frame in client.fetch_range(start.date(), end_date, leads=lead_list):
-                total += store.upsert(conn, "forecasts", frame)
-                status.update(
-                    f"{total:,} rows — through {frame['valid_time'].max():%Y-%m-%d}"
-                )
+        for model in model_list:
+            with OpenMeteoClient(location, model=model) as client:
+                with console.status(f"Fetching {model}…") as status:
+                    for frame in client.fetch_range(
+                        start.date(), end_date, leads=lead_list
+                    ):
+                        total += store.upsert(conn, "forecasts", frame)
+                        status.update(
+                            f"{model}: {total:,} rows — "
+                            f"through {frame['valid_time'].max():%Y-%m-%d}"
+                        )
+            console.print(f"  [green]✓[/green] {model}")
 
         console.print(f"[green]Stored {total:,} forecast rows.[/green]")
-        _print_coverage(conn)
+        _print_sources(conn)
 
 
 @app.command("air-update")
@@ -206,6 +225,7 @@ def bias(
         "local_hour", help="Break down by local_hour, local_month, or none."
     ),
     lead: int = typer.Option(1, help="Forecast lead time in days to report."),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to analyze."),
 ) -> None:
     """Report how wrong the public forecast is at your location."""
     try:
@@ -213,7 +233,7 @@ def bias(
     except ConfigError as error:
         _fail(str(error))
 
-    paired = _load_paired(location)
+    paired = _load_paired(location, source)
 
     console.print(f"\n[bold]Overall forecast error[/bold] (forecast − actual)")
     _print_frame(bias_analysis.overall(paired))
@@ -234,6 +254,7 @@ def backtest(
         0.7, help="Fraction of the time span used for training, if no --train-end."
     ),
     lead: int = typer.Option(None, help="Show only this lead time."),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to score."),
 ) -> None:
     """Score corrections on held-out data they were never fitted to."""
     try:
@@ -241,7 +262,7 @@ def backtest(
     except ConfigError as error:
         _fail(str(error))
 
-    paired = _load_paired(location)
+    paired = _load_paired(location, source)
     results, info = backtest_analysis.evaluate(
         paired, variable=variable, train_fraction=train_fraction, train_end=train_end
     )
@@ -264,6 +285,7 @@ def frost_skill(
     lead: int = typer.Option(1, help="Forecast lead time in days to assess."),
     threshold: float = typer.Option(32.0, help="Temperature defining a frost night."),
     train_end: str = typer.Option(None, help="ISO date ending the training period."),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to score."),
 ) -> None:
     """Score the yes/no frost call on held-out nights."""
     try:
@@ -271,7 +293,7 @@ def frost_skill(
     except ConfigError as error:
         _fail(str(error))
 
-    paired = _load_paired(location)
+    paired = _load_paired(location, source)
     at_lead = paired[paired["lead_days"] == lead].dropna(subset=["temp_f_error"])
     if at_lead.empty:
         _fail(f"No paired data at lead {lead}.")
@@ -320,20 +342,66 @@ def export(
     console.print(f"[green]Exported to {target}[/green]")
 
 
-def _load_paired(location: Location) -> pd.DataFrame:
-    """Observations and forecasts joined into one row per (hour, lead)."""
+def _load_paired(location: Location, source: str | None = None) -> pd.DataFrame:
+    """Observations and forecasts joined into one row per (hour, lead).
+
+    Exactly one forecast source must be selected: several models are stored
+    side by side, and joining them all at once would silently multiply every
+    observation hour by the number of models.
+    """
+    source = source or DEFAULT_SOURCE
     with store.connect() as conn:
         station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
-        forecasts = conn.execute("SELECT * FROM forecasts ORDER BY valid_time").df()
+        forecasts = conn.execute(
+            "SELECT * FROM forecasts WHERE source = ? ORDER BY valid_time", [source]
+        ).df()
 
-    if station.empty or forecasts.empty:
-        _fail("Need both station and forecast data — run the backfill commands first.")
+    if station.empty:
+        _fail("No station data — run backfill-station first.")
+    if forecasts.empty:
+        available = _available_sources()
+        _fail(
+            f"No forecasts stored for source '{source}'.\n"
+            f"Available: {', '.join(available) if available else '(none)'}\n"
+            f"Run backfill-forecast, or pass --source with one of the above."
+        )
 
     paired = align.pair(align.hourly_station(station), forecasts)
     if paired.empty:
         _fail("No overlapping hours between station and forecast data.")
 
     return align.add_time_features(paired, location.timezone)
+
+
+def _available_sources() -> list[str]:
+    with store.connect() as conn:
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT source FROM forecasts ORDER BY source"
+            ).fetchall()
+        ]
+
+
+def _print_sources(conn) -> None:
+    table = Table(title="Forecast sources")
+    table.add_column("Source")
+    table.add_column("From (UTC)")
+    table.add_column("To (UTC)")
+    table.add_column("Rows", justify="right")
+
+    rows = conn.execute(
+        "SELECT source, min(valid_time), max(valid_time), count(*) "
+        "FROM forecasts GROUP BY source ORDER BY source"
+    ).fetchall()
+    for source, first, last, count in rows:
+        table.add_row(
+            source,
+            f"{first.astimezone(timezone.utc):%Y-%m-%d}" if first else "—",
+            f"{last.astimezone(timezone.utc):%Y-%m-%d}" if last else "—",
+            f"{count:,}",
+        )
+    console.print(table)
 
 
 def _print_coverage(conn) -> None:

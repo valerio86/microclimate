@@ -60,9 +60,26 @@ CHUNK_DAYS = 90  # Keep responses and URLs a manageable size.
 
 
 class OpenMeteoClient:
-    def __init__(self, location: Location, timeout: float = 60.0):
+    """Client for one weather model.
+
+    `model` selects the numerical model (``icon_seamless``, ``ecmwf_ifs025``,
+    ``gfs_seamless``, ``gem_seamless``, …). Leaving it unset uses Open-Meteo's
+    `best_match`, which at this location resolves to GFS — measurably the worst
+    of the four here (lead-1 MAE 2.82 °F against the station, versus 2.33 for
+    ICON) and the only one with a large lead-1 to lead-2 discontinuity. Prefer
+    naming a model explicitly, and store several: their disagreement is a useful
+    estimate of how uncertain a given forecast hour is.
+    """
+
+    def __init__(self, location: Location, model: str | None = None, timeout: float = 60.0):
         self._location = location
+        self._model = model
         self._client = httpx.Client(timeout=timeout)
+
+    @property
+    def source(self) -> str:
+        """Value written to `forecasts.source`, part of that table's key."""
+        return f"open-meteo:{self._model}" if self._model else "open-meteo"
 
     def __enter__(self) -> OpenMeteoClient:
         return self
@@ -83,6 +100,8 @@ class OpenMeteoClient:
         # cell's mean height, which is a large temperature bias in hilly terrain.
         if self._location.elevation_m is not None:
             params["elevation"] = self._location.elevation_m
+        if self._model:
+            params["models"] = self._model
         return params
 
     def _get(self, url: str, params: dict, max_retries: int = 4) -> dict:
@@ -153,7 +172,7 @@ class OpenMeteoClient:
                 else:
                     frame = self.fetch_lead(chunk_start, chunk_end, lead)
                 if not frame.empty:
-                    frame["source"] = "open-meteo"
+                    frame["source"] = self.source
                     yield frame
 
 
