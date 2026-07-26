@@ -132,6 +132,49 @@ def daily_features(
     return daily
 
 
+def upcoming_features(
+    hourly_by_source: dict[str, pd.DataFrame], timezone: str
+) -> pd.DataFrame:
+    """Daily agreement features from live forecasts, for the days ahead.
+
+    Built to match `daily_features` exactly: the same daily totals, the same
+    wet threshold, the same three columns. Only complete local days are kept —
+    today is usually half over by the time this runs, and a partial day's total
+    would understate the rain and read as a confident dry forecast.
+    """
+    totals, hours = {}, {}
+    for source, frame in hourly_by_source.items():
+        if frame.empty:
+            continue
+        local = pd.to_datetime(frame["valid_time"], utc=True).dt.tz_convert(timezone)
+        grouped = frame.assign(day=local.dt.date).groupby("day")
+        totals[source] = grouped["precip_in"].sum()
+        hours[source] = grouped.size()
+
+    if not totals:
+        return pd.DataFrame()
+
+    agreement = pd.DataFrame(totals)
+    # Every model must cover the whole day. A partial day from any one of them
+    # would drag the mean down and read as a confident dry forecast.
+    complete = pd.DataFrame(hours).min(axis=1) >= 24
+    agreement = agreement[complete.reindex(agreement.index).fillna(False)]
+    if agreement.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame(
+        {
+            "models_wet": (agreement >= 0.02).sum(axis=1),
+            "model_mean_in": agreement.mean(axis=1),
+            "model_spread_in": agreement.std(axis=1),
+        }
+    ).reset_index(names="day")
+    out["per_model_in"] = [
+        ", ".join(f"{value:.2f}" for value in row) for _, row in agreement.iterrows()
+    ]
+    return out
+
+
 def fit_predict_gbm(train: pd.DataFrame, test: pd.DataFrame, seed: int = 0) -> np.ndarray:
     """Gradient-boosted trees. Small, because the training set is small."""
     from sklearn.ensemble import HistGradientBoostingClassifier

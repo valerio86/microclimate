@@ -15,6 +15,7 @@ from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
 from .analysis import rain as rain_analysis
+from .analysis import rain_model
 from .config import (
     AmbientCredentials,
     ConfigError,
@@ -333,6 +334,84 @@ def crossval(
     console.print(
         "[dim]skill_std is the number to watch: a high mean with a wide spread "
         "is not a reliable win.[/dim]"
+    )
+
+
+@app.command("rain-forecast")
+def rain_forecast(
+    days: int = typer.Option(5, help="How many days ahead to report."),
+) -> None:
+    """Rain chance for the days ahead, from the frozen three-feature model."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    model_list = [value.strip() for value in DEFAULT_MODELS.split(",") if value.strip()]
+    sources = [f"open-meteo:{model}" for model in model_list]
+
+    # Train on everything stored. Model selection is finished, so there is no
+    # holdout to protect here — the sealed period has already been spent.
+    with store.connect() as conn:
+        station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
+        hourly = align.hourly_station(station)
+        paired = {}
+        for source in sources:
+            forecasts = conn.execute(
+                "SELECT * FROM forecasts WHERE source = ? ORDER BY valid_time", [source]
+            ).df()
+            if forecasts.empty:
+                _fail(f"No stored forecasts for {source} — run backfill-forecast.")
+            paired[source] = align.add_time_features(
+                align.pair(hourly, forecasts), location.timezone
+            )
+
+    training = rain_model.daily_features(
+        paired, location.timezone, primary=sources[0], lead_days=1
+    )
+    if training.empty:
+        _fail("No usable training days.")
+
+    live = {}
+    for model in model_list:
+        with OpenMeteoClient(location, model=model) as client:
+            live[f"open-meteo:{model}"] = client.fetch_upcoming(days + 1)
+
+    upcoming = rain_model.upcoming_features(live, location.timezone)
+    if upcoming.empty:
+        _fail("No complete days in the live forecast.")
+
+    # Never show 0% or 100%: the model has ~450 training days and no business
+    # claiming certainty about weather, however confident the fit happens to be.
+    upcoming["rain_chance"] = rain_model.fit_predict_frozen(training, upcoming).clip(
+        0.01, 0.99
+    )
+
+    console.print(
+        f"\n[bold]Rain chance[/bold] — trained on {len(training):,} days, "
+        f"{len(model_list)} models ({', '.join(model_list)})"
+    )
+    table = Table()
+    table.add_column("Day")
+    table.add_column("Models wet", justify="right")
+    table.add_column("Per-model inches")
+    table.add_column("Spread", justify="right")
+    table.add_column("Rain chance", justify="right")
+    for _, row in upcoming.head(days).iterrows():
+        chance = row["rain_chance"]
+        colour = "red" if chance >= 0.6 else "yellow" if chance >= 0.3 else "green"
+        table.add_row(
+            f"{row['day']:%a %d %b}",
+            f"{int(row['models_wet'])}/{len(model_list)}",
+            row["per_model_in"],
+            f"{row['model_spread_in']:.2f}",
+            f"[{colour}]{chance:.0%}[/{colour}]",
+        )
+    console.print(table)
+    console.print(
+        "[dim]Calibrated at the extremes; under-confident in the middle — a "
+        "stated 45% has historically meant nearer 65%. Liquid rain only: the "
+        "gauge cannot see snow, so this is not meaningful below freezing.[/dim]"
     )
 
 

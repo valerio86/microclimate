@@ -28,6 +28,7 @@ from ..config import Location
 
 HISTORICAL_FORECAST_URL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
 # Open-Meteo variable -> our canonical column name.
 VARIABLES = {
@@ -167,6 +168,26 @@ class OpenMeteoClient:
         )
         frame = _hourly_to_frame(payload, {v: c for v, c in VARIABLES.items()})
         frame["lead_days"] = 0
+        return frame
+
+    def fetch_upcoming(self, days: int = 5) -> pd.DataFrame:
+        """The live forecast for the days ahead.
+
+        A different endpoint from the historical ones, but deliberately the same
+        variables and units, so features built from it match those the model was
+        trained on. A feature computed differently at prediction time than at
+        training time is the quiet way a good model starts producing nonsense.
+        """
+        payload = self._get(
+            FORECAST_URL,
+            {
+                **self._base_params(),
+                "forecast_days": days,
+                "hourly": ",".join(VARIABLES),
+            },
+        )
+        frame = _hourly_to_frame(payload, dict(VARIABLES))
+        frame["source"] = self.source
         return frame
 
     def fetch_lead(self, start: date, end: date, lead_days: int) -> pd.DataFrame:

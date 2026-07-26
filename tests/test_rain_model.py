@@ -90,3 +90,43 @@ def test_every_method_returns_one_probability_per_test_row():
         predicted = method(train, test)
         assert len(predicted) == len(test), name
         assert np.isfinite(predicted).all(), name
+
+
+def test_upcoming_features_drop_partial_days():
+    # Today is usually half over when this runs; a partial day's total would
+    # understate the rain and read as a confident dry forecast.
+    times = pd.date_range("2026-07-26 12:00", periods=48, freq="1h", tz="UTC")
+    frames = {
+        f"m{i}": pd.DataFrame({"valid_time": times, "precip_in": 0.01})
+        for i in range(3)
+    }
+    out = rm.upcoming_features(frames, "UTC")
+
+    days = set(out["day"])
+    assert pd.Timestamp("2026-07-26").date() not in days, "first day is partial"
+    assert pd.Timestamp("2026-07-27").date() in days
+
+
+def test_upcoming_features_require_all_models_to_cover_the_day():
+    full = pd.date_range("2026-07-27", periods=24, freq="1h", tz="UTC")
+    frames = {
+        "a": pd.DataFrame({"valid_time": full, "precip_in": 0.02}),
+        "b": pd.DataFrame({"valid_time": full[:6], "precip_in": 0.02}),
+    }
+    assert rm.upcoming_features(frames, "UTC").empty
+
+
+def test_upcoming_features_compute_agreement():
+    full = pd.date_range("2026-07-27", periods=24, freq="1h", tz="UTC")
+    frames = {
+        "a": pd.DataFrame({"valid_time": full, "precip_in": 0.01}),   # 0.24 total
+        "b": pd.DataFrame({"valid_time": full, "precip_in": 0.01}),
+        "c": pd.DataFrame({"valid_time": full, "precip_in": 0.0}),    # dry
+    }
+    out = rm.upcoming_features(frames, "UTC")
+    assert out["models_wet"].iloc[0] == 2
+    assert out["model_spread_in"].iloc[0] > 0
+
+
+def test_upcoming_features_handle_no_input():
+    assert rm.upcoming_features({}, "UTC").empty
