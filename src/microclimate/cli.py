@@ -11,7 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import align, alerts as alerts_module, dashboard, features, store
+from . import align, alerts as alerts_module, dashboard, features, history, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
@@ -410,8 +410,16 @@ def _upcoming_context(location: Location, days: int) -> dict:
         )
         per_model[source] = frame.assign(day=local.dt.date).groupby("day")["precip_in"].sum()
 
+    try:
+        verification = history.verification(
+            paired, location.timezone, primary=sources[0]
+        )
+    except Exception:  # noqa: BLE001 — verification is informative, never load-bearing
+        verification = None
+
     return {
         "station": station,
+        "verification": verification,
         "nights": nights.head(days),
         "hourly": upcoming,
         "rain_days": rain_days.head(days),
@@ -442,6 +450,7 @@ def build_dashboard(
         alerts=context["alerts"],
         timezone_name=location.timezone,
         forecast_through=context["forecast_through"],
+        history=context["verification"],
     )
     destination = dashboard.render(payload, data_dir() / "dashboard.html")
 
@@ -576,6 +585,7 @@ def refresh(
                 alerts=context["alerts"],
                 timezone_name=location.timezone,
                 forecast_through=context["forecast_through"],
+                history=context["verification"],
             )
             dashboard.render(payload, data_dir() / "dashboard.html")
             say(f"Dashboard rebuilt — {len(context['alerts'])} alert(s).")

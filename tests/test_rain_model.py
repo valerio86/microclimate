@@ -130,3 +130,19 @@ def test_upcoming_features_compute_agreement():
 
 def test_upcoming_features_handle_no_input():
     assert rm.upcoming_features({}, "UTC").empty
+
+
+def test_single_class_training_falls_back_to_the_base_rate():
+    # A month-long dry spell leaves the classifier one class; it must degrade to
+    # climatology rather than raising and taking the dashboard down.
+    data = synthetic_daily(120)
+    data["wet"] = False
+    predicted = rm.fit_predict_frozen(data.iloc[:80], data.iloc[80:])
+    assert np.allclose(predicted, 0.0)
+
+
+def test_tiny_training_set_falls_back_rather_than_fitting():
+    data = synthetic_daily(20)
+    predicted = rm.fit_predict_frozen(data.iloc[:5], data.iloc[5:])
+    assert np.isfinite(predicted).all()
+    assert len(set(np.round(predicted, 6))) == 1, "should be a constant base rate"

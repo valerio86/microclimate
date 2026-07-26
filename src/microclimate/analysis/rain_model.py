@@ -209,8 +209,16 @@ def fit_predict_logistic(
     train: pd.DataFrame, test: pd.DataFrame, features: list[str] | None = None
 ) -> np.ndarray:
     columns = features or FEATURES
+    target = train["wet"].astype(int)
+
+    # A window with no variation in the outcome — a long dry spell, or simply
+    # too little history yet — gives the classifier one class and it raises.
+    # Fall back to the base rate rather than taking the whole page down with it.
+    if target.nunique() < 2 or len(train) < 10:
+        return np.full(len(test), float(target.mean()) if len(target) else 0.5)
+
     model = build_logistic(columns)
-    model.fit(train[columns], train["wet"].astype(int))
+    model.fit(train[columns], target)
     return model.predict_proba(test[columns])[:, 1]
 
 

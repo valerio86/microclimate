@@ -63,6 +63,7 @@ def build_payload(
     alerts: list,
     timezone_name: str,
     forecast_through: pd.Timestamp | None,
+    history: dict | None = None,
 ) -> dict:
     """Everything the page renders, as plain JSON-safe structures."""
     now = datetime.now(timezone.utc)
@@ -144,7 +145,43 @@ def build_payload(
         ],
         "curve": curve,
         "rain": rain,
+        "history": _history_block(history),
         "trust": TRUST,
+    }
+
+
+def _history_block(history: dict | None) -> dict:
+    """Past predictions against outcomes, for the verification panel."""
+    if not history:
+        return {}
+
+    nights = history.get("nights", pd.DataFrame())
+    rain_rows = history.get("rain", pd.DataFrame())
+    key = "night" if "night" in getattr(nights, "columns", []) else "day"
+
+    return {
+        "summary": {k: _json_safe(v) for k, v in (history.get("summary") or {}).items()},
+        "nights": [
+            {
+                "day": _json_safe(row[key]),
+                "actual": _json_safe(row["actual_min"]),
+                "raw": _json_safe(row["raw_min"]),
+                "corrected": _json_safe(row["corrected_min"]),
+            }
+            for _, row in nights.iterrows()
+        ]
+        if not nights.empty
+        else [],
+        "rain": [
+            {
+                "day": _json_safe(row["day"]),
+                "chance": _json_safe(row.get("rain_chance")),
+                "wet": bool(row["wet"]),
+            }
+            for _, row in rain_rows.iterrows()
+        ]
+        if not rain_rows.empty
+        else [],
     }
 
 

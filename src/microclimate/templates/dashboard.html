@@ -108,6 +108,17 @@
     <div id="t-rain"></div>
   </section>
 
+  <section class="card" id="history-card">
+    <h2>How it has been doing</h2>
+    <p class="note">Every prediction below was reconstructed from the archived
+      day-ahead forecast, using models fitted only on data from <em>before</em> this
+      window — so it is genuine out-of-sample verification, not a replay.</p>
+    <div class="strip" id="score"></div>
+    <div class="legend" id="lg-hist"></div>
+    <div class="plot"><div id="c-hist"></div></div>
+    <p class="note" id="rain-record" style="margin-top:12px"></p>
+  </section>
+
   <section class="card trust">
     <h2>How much to trust this</h2>
     <p class="note">Measured on data the models never saw during fitting.</p>
@@ -242,6 +253,57 @@ function render(){
       `${r.models_wet ?? "—"}/${models.length}`,
       r.mean_in===null?"—":r.mean_in.toFixed(2)+" in",
       r.spread_in===null?"—":r.spread_in.toFixed(2)]));
+
+  // --- verification panel ---
+  const H = D.history || {};
+  const card = document.getElementById("history-card");
+  if(!H.nights || !H.nights.length){
+    card.style.display="none";
+  } else {
+    const s = H.summary || {};
+    const tiles=[];
+    if(s.raw_low_mae!==undefined && s.corrected_low_mae!==undefined){
+      const better = s.corrected_low_mae < s.raw_low_mae;
+      tiles.push(["Overnight low error",
+        `${s.corrected_low_mae.toFixed(1)} °F`,
+        `public forecast ${s.raw_low_mae.toFixed(1)} °F — ${better?"better":"no better"}`]);
+    }
+    if(s.frost_nights!==undefined && s.frost_nights>0){
+      tiles.push(["Frosts caught", `${s.frost_caught}/${s.frost_nights}`,
+        `${s.frost_false_alarms} false alarm${s.frost_false_alarms===1?"":"s"}`]);
+    } else if(s.frost_nights===0){
+      tiles.push(["Frosts","none","no frost nights in this window"]);
+    }
+    if(s.rain_skill!==undefined && s.rain_skill!==null){
+      tiles.push(["Rain skill", s.rain_skill.toFixed(2),
+        `Brier ${s.rain_brier.toFixed(3)} over ${s.rain_days} days`]);
+    }
+    document.getElementById("score").innerHTML = tiles.map(([k,v,n])=>
+      `<div class="now"><div class="k">${k}</div><div class="v">${v}</div>
+       <div class="k" style="text-transform:none;letter-spacing:0;margin-top:4px">${n}</div></div>`).join("");
+
+    const hl=H.nights;
+    const labels=hl.map((n,i)=> i%5===0 ? fmtDay(n.day).replace(/,.*/,"") : null);
+    lineChart("c-hist",[
+      {name:"Public forecast",colorVar:"--raw",values:hl.map(n=>n.raw),emphasis:false},
+      {name:"Predicted here",colorVar:"--corrected",values:hl.map(n=>n.corrected),emphasis:true},
+      {name:"Actually happened",colorVar:"--good",values:hl.map(n=>n.actual),emphasis:true},
+    ],labels,"°F overnight low");
+    document.getElementById("lg-hist").innerHTML =
+      `<span><i class="sw" style="background:var(--good)"></i>Actually happened</span>
+       <span><i class="sw" style="background:var(--corrected)"></i>Predicted here</span>
+       <span><i class="sw" style="background:var(--raw)"></i>Public forecast</span>`;
+
+    if(H.rain && H.rain.length){
+      const wet=H.rain.filter(r=>r.wet).length;
+      const meanWhenWet = H.rain.filter(r=>r.wet).reduce((a,r)=>a+(r.chance||0),0)/Math.max(wet,1);
+      const meanWhenDry = H.rain.filter(r=>!r.wet).reduce((a,r)=>a+(r.chance||0),0)/Math.max(H.rain.length-wet,1);
+      document.getElementById("rain-record").textContent =
+        `Rain: ${wet} of ${H.rain.length} days were wet. On those days it had predicted `+
+        `${Math.round(meanWhenWet*100)}% on average; on dry days, ${Math.round(meanWhenDry*100)}%. `+
+        `A useful forecast separates those two numbers.`;
+    }
+  }
 
   document.getElementById("verified").innerHTML =
     `<li><strong>Rain chance.</strong> ${D.trust.rain}</li>
