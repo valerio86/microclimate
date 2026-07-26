@@ -123,6 +123,29 @@ before the full 2024+ backfill:
 - **Error grows and flips sign with lead time**, from +0.65 °F at lead 0 to
   −2.65 °F at lead 7.
 
+## Pick the model before correcting it
+
+Open-Meteo's `best_match` resolves to **GFS** at this location, and GFS is the
+worst of the four models here. Scored against the station, lead 1:
+
+| Model | MAE | Lead 1 → 2 bias |
+|---|---|---|
+| icon_seamless | **2.33 °F** | +0.73 → +0.48 |
+| gem_seamless | 2.42 °F | +0.80 → +0.76 |
+| ecmwf_ifs025 | 2.48 °F | −0.61 → −0.82 |
+| best_match / GFS | 2.82 °F | +0.02 → **−1.78** |
+
+That last column also explains the lead-1 to lead-2 discontinuity that looked
+like a data artifact: it is GFS drifting, and no other model does it.
+
+The two effects compose. At lead 1, raw GFS is 2.80 °F MAE and 2.50 corrected;
+raw ICON is 2.34 and **2.10 corrected** — a 25% total reduction, two-thirds of
+which came from naming a model rather than from any modelling.
+
+Models are stored side by side (`forecasts.source` is part of the key), so their
+disagreement is available as an uncertainty feature. Analysis commands take
+`--source` and default to ICON.
+
 ## Does correcting actually help?
 
 `microclimate backtest` fits corrections on an earlier period and scores them on

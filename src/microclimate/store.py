@@ -63,9 +63,35 @@ CREATE TABLE IF NOT EXISTS forecasts (
     precip_in       DOUBLE,
     cloud_cover     DOUBLE,
     solar_wm2       DOUBLE,
+    wind_100m_mph   DOUBLE,
+    direct_wm2      DOUBLE,
+    diffuse_wm2     DOUBLE,
+    vpd_kpa         DOUBLE,
     PRIMARY KEY (valid_time, lead_days, source)
 );
 """
+
+# Columns added after the original schema. CREATE TABLE IF NOT EXISTS will not
+# add them to a database that already exists, so they are applied explicitly on
+# every connect. Adding a column is cheap and idempotent; leave entries here
+# permanently so any older database can still be opened.
+MIGRATIONS: dict[str, dict[str, str]] = {
+    "forecasts": {
+        "wind_100m_mph": "DOUBLE",
+        "direct_wm2": "DOUBLE",
+        "diffuse_wm2": "DOUBLE",
+        "vpd_kpa": "DOUBLE",
+    },
+}
+
+
+def migrate(conn: duckdb.DuckDBPyConnection) -> None:
+    """Bring an existing database up to the current column set."""
+    for table, columns in MIGRATIONS.items():
+        for name, sql_type in columns.items():
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {sql_type}"
+            )
 
 
 @contextmanager
@@ -74,6 +100,7 @@ def connect(path: Path | None = None) -> Iterator[duckdb.DuckDBPyConnection]:
     conn = duckdb.connect(str(path or db_path()))
     try:
         conn.execute(SCHEMA)
+        migrate(conn)
         yield conn
     finally:
         conn.close()

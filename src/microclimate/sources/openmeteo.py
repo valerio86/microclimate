@@ -45,6 +45,18 @@ VARIABLES = {
     "precipitation": "precip_in",
     "cloud_cover": "cloud_cover",
     "shortwave_radiation": "solar_wm2",
+    # Wind at 100 m against wind at 10 m gives shear, and shear is what decides
+    # whether the surface stays coupled to the air above it or decouples and
+    # pools cold air. `boundary_layer_height` would say this more directly, but
+    # Open-Meteo does not offer it as a `_previous_dayN` variable, so it cannot
+    # be had at forecast lead. Nor can cloud_cover_low, snow_depth,
+    # soil_temperature_0cm or cape — all return null at lead.
+    "wind_speed_100m": "wind_100m_mph",
+    # Direct and diffuse split apart: clear sun and bright overcast deliver
+    # similar totals but behave very differently for surface heating.
+    "direct_radiation": "direct_wm2",
+    "diffuse_radiation": "diffuse_wm2",
+    "vapour_pressure_deficit": "vpd_kpa",
 }
 
 # Match the station's native units so comparisons need no conversion.
@@ -104,18 +116,33 @@ class OpenMeteoClient:
             params["models"] = self._model
         return params
 
-    def _get(self, url: str, params: dict, max_retries: int = 4) -> dict:
+    def _get(self, url: str, params: dict, max_retries: int = 5) -> dict:
+        last_error: Exception | None = None
         for attempt in range(max_retries):
-            response = self._client.get(url, params=params)
-            if response.status_code == 429:
+            try:
+                response = self._client.get(url, params=params)
+            except (httpx.TimeoutException, httpx.TransportError) as error:
+                # A backfill is hundreds of requests; over that many, a dropped
+                # connection or slow response is routine. Losing the whole run
+                # to one of them is not acceptable.
+                last_error = error
                 time.sleep(min(2**attempt, 30))
                 continue
+
+            if response.status_code == 429 or response.status_code >= 500:
+                last_error = RuntimeError(f"HTTP {response.status_code}")
+                time.sleep(min(2**attempt, 30))
+                continue
+
             response.raise_for_status()
             payload = response.json()
             if "error" in payload:
                 raise RuntimeError(f"Open-Meteo error: {payload.get('reason')}")
             return payload
-        raise RuntimeError(f"Open-Meteo still rate-limiting after {max_retries} tries")
+
+        raise RuntimeError(
+            f"Open-Meteo request failed after {max_retries} attempts: {last_error}"
+        )
 
     def fetch_analysis(self, start: date, end: date) -> pd.DataFrame:
         """Archived best-match forecast for a past range (lead_days = 0)."""
