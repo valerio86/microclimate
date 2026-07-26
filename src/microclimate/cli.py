@@ -336,6 +336,59 @@ def crossval(
     )
 
 
+@app.command("rain-health")
+def rain_health(
+    lead: int = typer.Option(1, help="Forecast lead time in days."),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to compare against."),
+    all_months: bool = typer.Option(False, help="Show every month, not just problems."),
+) -> None:
+    """Check the rain gauge for periods when it was blocked.
+
+    A clogged funnel looks exactly like a dry spell, so it is invisible unless
+    checked for. Only warm hours count, so snow cannot be mistaken for a fault.
+    """
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    paired = _load_paired(location, source)
+    at_lead = paired[paired["lead_days"] == lead]
+    health = rain_analysis.gauge_health(at_lead, location.timezone)
+    if health.empty:
+        _fail("Not enough warm-hour data to assess the gauge.")
+
+    problems = health[health["verdict"].isin(["BLOCKED", "suspect"])]
+    console.print(
+        f"\n[bold]Rain gauge health[/bold] — {len(health)} months assessed, "
+        f"{len(problems)} flagged"
+    )
+    console.print(
+        "[dim]Warm hours only (≥38 °F), so frozen precipitation cannot explain "
+        "a zero. BLOCKED means the forecast was wet repeatedly and the gauge "
+        "never once tipped.[/dim]\n"
+    )
+
+    shown = health if all_months else (problems if not problems.empty else health)
+    _print_frame(
+        shown[
+            [
+                "month", "hours", "forecast_in", "observed_in",
+                "forecast_wet_hours", "observed_wet_hours", "catch_ratio", "verdict",
+            ]
+        ]
+    )
+
+    known = ", ".join(f"{a}→{b}" for a, b in rain_analysis.GAUGE_OUTAGES)
+    console.print(f"\n[dim]Excluded from rain analysis: {known}[/dim]")
+    unlisted = problems[~rain_analysis.in_outage(problems["month"] + "-15")]
+    if not unlisted.empty:
+        console.print(
+            f"[yellow]{len(unlisted)} flagged month(s) are not in GAUGE_OUTAGES — "
+            f"add them to rain.py if the gauge was genuinely blocked.[/yellow]"
+        )
+
+
 @app.command("rain-chance")
 def rain_chance(
     lead: int = typer.Option(1, help="Forecast lead time in days."),

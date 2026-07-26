@@ -38,6 +38,20 @@ WET_THRESHOLD_IN = 0.01
 # Below this the bucket under-catches badly even when snowfall is not forecast.
 COLD_CUTOFF_F = 34.0
 
+# Periods when the gauge was physically blocked and recorded nothing.
+#
+# Found by `gauge_health`, not by memory: the station reported zero measurable
+# rain for 90 consecutive days from 2025-06-07 to 2025-09-05, across 36 days on
+# which ICON forecast rain — including 1.16 in on 2025-08-20. A New York summer
+# does not do that. The window is opened a week early because 2025-06-06 already
+# caught only 0.14 of a forecast 1.10 in, so it was clogging before it stopped.
+#
+# These days are dropped rather than treated as dry. A blocked gauge produces
+# confident wrong labels, which is worse for a model than missing data.
+GAUGE_OUTAGES: tuple[tuple[str, str], ...] = (
+    ("2025-06-01", "2025-09-06"),
+)
+
 
 def usable_mask(frame: pd.DataFrame) -> pd.Series:
     """Rows where the gauge can be trusted to have seen liquid precipitation.
@@ -51,6 +65,65 @@ def usable_mask(frame: pd.DataFrame) -> pd.Series:
     cold = temperature.lt(COLD_CUTOFF_F).fillna(False)
     snowy = snowfall.gt(0.0)
     return ~(cold | snowy)
+
+
+def in_outage(days: pd.Series, outages=GAUGE_OUTAGES) -> pd.Series:
+    """True where the gauge is known to have been blocked."""
+    stamps = pd.to_datetime(days)
+    blocked = pd.Series(False, index=stamps.index)
+    for start, end in outages:
+        blocked |= (stamps >= pd.Timestamp(start)) & (stamps < pd.Timestamp(end))
+    return blocked
+
+
+def gauge_health(
+    paired: pd.DataFrame,
+    timezone: str,
+    warm_cutoff_f: float = 38.0,
+    min_forecast_wet_hours: int = 15,
+) -> pd.DataFrame:
+    """Per-month evidence of whether the gauge was working.
+
+    Restricted to hours warm enough that frozen precipitation cannot explain a
+    zero, so anything flagged here is a mechanical fault rather than the known
+    snow blindness. A month where the forecast was wet many times and the gauge
+    never once tipped is a blocked funnel — the failure mode that looks exactly
+    like a dry spell and silently poisons every label in it.
+    """
+    if paired.empty:
+        return pd.DataFrame()
+
+    frame = paired.copy()
+    local = pd.to_datetime(frame["valid_time"], utc=True).dt.tz_convert(timezone)
+    frame["month"] = local.dt.strftime("%Y-%m")
+
+    temperature = pd.to_numeric(frame.get("temp_f_actual"), errors="coerce")
+    warm = frame[temperature >= warm_cutoff_f]
+    if warm.empty:
+        return pd.DataFrame()
+
+    summary = warm.groupby("month").agg(
+        hours=("rain_in", "size"),
+        forecast_in=("precip_in", "sum"),
+        observed_in=("rain_in", "sum"),
+        forecast_wet_hours=("precip_in", lambda s: int((s >= 0.02).sum())),
+        observed_wet_hours=("rain_in", lambda s: int((s > 0).sum())),
+    ).reset_index()
+
+    summary = summary[summary["hours"] >= 200].copy()
+    summary["catch_ratio"] = summary["observed_in"] / summary["forecast_in"].replace(0, np.nan)
+
+    def classify(row) -> str:
+        if row["forecast_wet_hours"] < min_forecast_wet_hours:
+            return "insufficient"
+        if row["observed_wet_hours"] == 0:
+            return "BLOCKED"
+        if row["catch_ratio"] < 0.20:
+            return "suspect"
+        return "ok"
+
+    summary["verdict"] = summary.apply(classify, axis=1)
+    return summary.reset_index(drop=True)
 
 
 def daily_targets(paired: pd.DataFrame, timezone: str) -> pd.DataFrame:
@@ -78,7 +151,7 @@ def daily_targets(paired: pd.DataFrame, timezone: str) -> pd.DataFrame:
     ).reset_index()
 
     complete = (daily["hours"] >= 20) & (daily["usable_hours"] == daily["hours"])
-    daily = daily[complete].copy()
+    daily = daily[complete & ~in_outage(daily["day"])].copy()
     daily["wet"] = daily["observed_in"] >= WET_THRESHOLD_IN
     # Fraction of the day's forecast precipitation that was convective — high
     # values mean scattered cells that may miss the station entirely.

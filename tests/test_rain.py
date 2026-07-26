@@ -77,6 +77,58 @@ def test_convective_share_is_bounded_and_meaningful():
     assert daily["convective_share"].iloc[0] == pytest.approx(1.0)
 
 
+def test_outage_days_are_dropped_not_treated_as_dry():
+    # The failure this guards: a blocked gauge produces confident wrong labels,
+    # which is worse for a model than having no data at all.
+    frame = hourly(days=6, start="2025-06-02")
+    daily = rain.daily_targets(frame, "UTC")
+    assert daily.empty, "June 2025 falls inside the known outage"
+
+
+def test_days_outside_the_outage_survive():
+    frame = hourly(days=6, start="2025-10-01")
+    assert not rain.daily_targets(frame, "UTC").empty
+
+
+def test_in_outage_boundaries_are_half_open():
+    days = pd.Series(
+        pd.to_datetime(["2025-05-31", "2025-06-01", "2025-09-05", "2025-09-06"])
+    )
+    assert rain.in_outage(days).tolist() == [False, True, True, False]
+
+
+def test_gauge_health_flags_a_blocked_month():
+    frame = hourly(days=31, start="2025-10-01")
+    frame["temp_f_actual"] = 60.0
+    frame["precip_in"] = 0.0
+    # Forecast rain on many hours; gauge never tips.
+    frame.loc[frame.index % 17 == 0, "precip_in"] = 0.05
+
+    health = rain.gauge_health(frame, "UTC")
+    assert (health["verdict"] == "BLOCKED").any()
+
+
+def test_gauge_health_passes_a_working_month():
+    frame = hourly(days=31, start="2025-10-01")
+    frame["temp_f_actual"] = 60.0
+    wet = frame.index % 17 == 0
+    frame.loc[wet, "precip_in"] = 0.05
+    frame.loc[wet, "rain_in"] = 0.04
+
+    health = rain.gauge_health(frame, "UTC")
+    assert (health["verdict"] == "ok").all()
+
+
+def test_gauge_health_ignores_cold_months():
+    # A freezing month with no tips is snow blindness, not a fault, and must
+    # not be reported as a blockage.
+    frame = hourly(days=31, start="2025-10-01")
+    frame["temp_f_actual"] = 20.0
+    frame.loc[frame.index % 17 == 0, "precip_in"] = 0.05
+
+    assert rain.gauge_health(frame, "UTC").empty
+
+
 def test_brier_score_rewards_confident_correctness():
     outcome = np.array([1, 1, 0, 0])
     assert rain.brier_score(np.array([1.0, 1.0, 0.0, 0.0]), outcome) == pytest.approx(0.0)
