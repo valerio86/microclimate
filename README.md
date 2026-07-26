@@ -146,6 +146,39 @@ Models are stored side by side (`forecasts.source` is part of the key), so their
 disagreement is available as an uncertainty feature. Analysis commands take
 `--source` and default to ICON.
 
+## How much does correcting help, really?
+
+`microclimate crossval` runs five expanding-window folds and seals off a final
+holdout. It is a much harsher test than a single split, and the corrections do
+not survive it well.
+
+On ICON, across folds:
+
+| Method | skill mean | skill std | worst fold | best fold |
+|---|---|---|---|---|
+| regime | +0.06 | 0.08 | +0.02 | +0.20 |
+| adaptive | +0.06 | 0.08 | +0.01 | +0.20 |
+| harmonic | +0.05 | 0.07 | −0.01 | +0.16 |
+| buckets | +0.03 | 0.08 | −0.02 | +0.17 |
+| constant | +0.01 | 0.01 | −0.00 | +0.02 |
+
+**The spread exceeds the mean.** Nearly all the benefit comes from one fold —
+summer 2025 — which matches the seasonal picture: a large correctable warm bias
+in July and August, very little the rest of the year. It is mostly a *summer*
+correction, and single-split numbers of 0.10-0.11 were the luck of which period
+landed in the test set.
+
+On GFS the same methods are actively harmful: regime averages **−0.06** with a
+worst fold of **−0.58**, harmonic −0.11 and −0.76. Flexible corrections fitted to
+a model whose bias is unstable transfer badly, and only the crude ones (buckets,
+constant) stay near zero. The lesson is not that correction never works but that
+**it is worth far less than choosing the right model, and it is not free** — on
+the wrong baseline it destroys skill.
+
+The adaptive lag features (`recent_error`, persistence gap, trend) added nothing
+over the regime model. A negative result, but a real one: ICON's errors here are
+not autocorrelated day-to-day in a way a linear term can exploit.
+
 ## Does correcting actually help?
 
 `microclimate backtest` fits corrections on an earlier period and scores them on
