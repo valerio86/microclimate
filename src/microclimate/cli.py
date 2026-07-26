@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import align, store
+from . import align, features, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
@@ -263,6 +263,11 @@ def backtest(
         _fail(str(error))
 
     paired = _load_paired(location, source)
+    # Attach observation history as of each forecast's issue time, then verify
+    # the constraint held on this real data rather than only in tests.
+    paired = features.add_lagged_observations(paired, variable=variable)
+    features.assert_no_lookahead(paired, variable=variable)
+
     results, info = backtest_analysis.evaluate(
         paired, variable=variable, train_fraction=train_fraction, train_end=train_end
     )

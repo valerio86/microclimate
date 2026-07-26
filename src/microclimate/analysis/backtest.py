@@ -277,6 +277,74 @@ class RegimeCorrector(Corrector):
         return out
 
 
+@dataclass
+class AdaptiveCorrector(Corrector):
+    """Regime model plus what the station has been doing lately.
+
+    The regime terms describe how this site behaves *in general* under given
+    conditions. These add what is happening *right now*, which the calendar and
+    the forecast cannot express:
+
+      recent_error     how wrong this model was at this hour a lead-time ago.
+                       If it ran 3 °F warm here yesterday it will probably run
+                       warm today — the classic adaptive MOS term.
+      persistence_gap  observed a lead-time ago, minus what is forecast now.
+      obs_trend_6h     which way the air was already moving at issue time.
+
+    All three come from `features.add_lagged_observations`, which reads them as
+    of the forecast's issue time. Requires those columns; falls back to the plain
+    regime design when they are absent.
+    """
+
+    n_diurnal: int = 2
+    n_annual: int = 2
+    name: str = "adaptive"
+    _coefficients: dict = field(default_factory=dict)
+    _regime: RegimeCorrector = field(default_factory=RegimeCorrector)
+
+    def _design(self, frame: pd.DataFrame) -> np.ndarray:
+        base = self._regime._design(frame)
+
+        recent_error = _column(frame, "recent_error", 0.0)
+        trend = _column(frame, "obs_trend_6h", 0.0)
+        persistence = _column(frame, "persistence", np.nan)
+        forecast = _column(frame, "temp_f_forecast", np.nan)
+        gap = np.nan_to_num(persistence - forecast, nan=0.0)
+
+        hours = frame["local_hour"].to_numpy(dtype=float)
+        sh, ch = np.sin(2 * np.pi * hours / 24), np.cos(2 * np.pi * hours / 24)
+
+        # Crossed with the daily cycle: yesterday's daytime error says more
+        # about today's daytime than about tonight.
+        return np.column_stack(
+            [
+                base,
+                recent_error, recent_error * sh, recent_error * ch,
+                gap, gap * sh, gap * ch,
+                trend,
+            ]
+        )
+
+    def fit(self, train: pd.DataFrame, error_column: str) -> AdaptiveCorrector:
+        for lead, group in train.groupby("lead_days"):
+            clean = group.dropna(subset=[error_column])
+            if clean.empty:
+                continue
+            self._coefficients[lead], *_ = np.linalg.lstsq(
+                self._design(clean), clean[error_column].to_numpy(dtype=float), rcond=None
+            )
+        return self
+
+    def predict(self, frame: pd.DataFrame) -> np.ndarray:
+        out = np.zeros(len(frame))
+        for lead, group in frame.groupby("lead_days"):
+            coefficients = self._coefficients.get(lead)
+            if coefficients is None:
+                continue
+            out[frame["lead_days"].to_numpy() == lead] = self._design(group) @ coefficients
+        return out
+
+
 # --------------------------------------------------------------------------
 # Scoring
 # --------------------------------------------------------------------------
@@ -348,6 +416,9 @@ def evaluate(
             HarmonicCorrector(),
             RegimeCorrector(),
         ]
+        # Only offered when the leakage-safe lag features have been attached.
+        if "recent_error" in usable.columns:
+            correctors.append(AdaptiveCorrector())
 
     raw = test[error_column].to_numpy(dtype=float)
     columns: dict[str, np.ndarray] = {"raw forecast": raw}
