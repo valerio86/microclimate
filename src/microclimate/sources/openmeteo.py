@@ -57,6 +57,16 @@ VARIABLES = {
     "direct_radiation": "direct_wm2",
     "diffuse_radiation": "diffuse_wm2",
     "vapour_pressure_deficit": "vpd_kpa",
+    # Snowfall marks the hours where the tipping bucket is blind: it does not
+    # register frozen precipitation until it melts, so those hours have no
+    # usable ground truth and must be excluded rather than learned from.
+    "snowfall": "snowfall_in",
+    # Showers separate convective from stratiform. A convective cell over a
+    # 13 km grid square frequently misses a point sensor entirely, while
+    # widespread rain does not — the single most relevant distinction for
+    # predicting whether rain actually lands *here*.
+    "showers": "showers_in",
+    "weather_code": "weather_code",
 }
 
 # Match the station's native units so comparisons need no conversion.

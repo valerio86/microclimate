@@ -81,6 +81,9 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "direct_wm2": "DOUBLE",
         "diffuse_wm2": "DOUBLE",
         "vpd_kpa": "DOUBLE",
+        "snowfall_in": "DOUBLE",
+        "showers_in": "DOUBLE",
+        "weather_code": "DOUBLE",
     },
 }
 

@@ -14,6 +14,7 @@ from . import align, features, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
+from .analysis import rain as rain_analysis
 from .config import (
     AmbientCredentials,
     ConfigError,
@@ -333,6 +334,69 @@ def crossval(
         "[dim]skill_std is the number to watch: a high mean with a wide spread "
         "is not a reliable win.[/dim]"
     )
+
+
+@app.command("rain-chance")
+def rain_chance(
+    lead: int = typer.Option(1, help="Forecast lead time in days."),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to score."),
+    train_end: str = typer.Option(None, help="ISO date ending the training period."),
+) -> None:
+    """Score daily rain probability, excluding hours the gauge cannot see."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    paired = _load_paired(location, source)
+    at_lead = paired[paired["lead_days"] == lead]
+    if at_lead.empty:
+        _fail(f"No paired data at lead {lead}.")
+
+    daily = rain_analysis.daily_targets(at_lead, location.timezone)
+    if daily.empty:
+        _fail(
+            "No complete days survived the snow filter. "
+            "Refetch forecasts so snowfall is available."
+        )
+
+    train, test = backtest_analysis.chronological_split(
+        daily.rename(columns={"day": "valid_time"}), train_end=train_end
+    )
+    train = train.rename(columns={"valid_time": "day"})
+    test = test.rename(columns={"valid_time": "day"})
+
+    outcome = test["wet"].to_numpy(dtype=float)
+    climatology = rain_analysis.climatological_probability(train, test)
+    calibrated = rain_analysis.forecast_amount_probability(train, test)
+
+    console.print(
+        f"\n[bold]Daily rain chance at lead {lead}d[/bold] — "
+        f"{len(train):,} training days, {len(test):,} test days, "
+        f"base rate {train['wet'].mean():.0%}"
+    )
+    console.print(
+        "[dim]Snow-affected days are excluded: an unheated gauge records them as "
+        "dry, so their labels are wrong rather than merely noisy.[/dim]\n"
+    )
+
+    rows = [
+        {
+            "method": "climatology",
+            "brier": rain_analysis.brier_score(climatology, outcome),
+            "skill": rain_analysis.brier_skill(climatology, outcome),
+        },
+        {
+            "method": "calibrated forecast",
+            "brier": rain_analysis.brier_score(calibrated, outcome),
+            "skill": rain_analysis.brier_skill(calibrated, outcome),
+        },
+    ]
+    _print_frame(pd.DataFrame(rows))
+
+    console.print("\n[bold]Reliability of the calibrated forecast[/bold]")
+    console.print("[dim]observed_rate should track mean_predicted.[/dim]")
+    _print_frame(rain_analysis.reliability(calibrated, outcome, bins=5))
 
 
 @app.command("frost-skill")
