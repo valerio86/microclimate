@@ -199,15 +199,25 @@ numbers above supersede it.
 Ground truth has to be trusted before anything is fitted to it. Three defects
 found, in decreasing order of how well they are pinned down:
 
-**Temperature — radiation shield, ~2.9 °F at full sun.** The passive shield
-heats in sunlight. Isolated by response time: filtering out everything slower
-than 90 minutes, the fast wiggles in temperature track those in solar radiation
-with a peak at a **5-minute lag worth 2.9 °F per 1000 W/m²**, gone by 25 minutes.
-Nothing with the thermal mass of a field responds that fast, so that component is
-instrumental. Notably, the *total* solar-correlated warmth in the forecast
-residual is nearer 8 °F — so only about a third is the shield, and the rest is a
-real land-surface difference between a mown open field and a grid cell averaging
-in forest and water. See `shield.py`; the correction is opt-in and reversible.
+**Temperature — no detectable radiation-shield error.** Cloud-shadow analysis
+initially suggested 2.9 °F per 1000 W/m² at a 5-minute lag, which looked like an
+instrument response. A tree ~15 m from the station overturned it. The tree clips
+the sensor for one 5-minute sample at a fixed bearing on every clear day (178
+transits on record), and it is the control the cloud analysis lacked: **a cloud
+shades the whole field and cools the air; a tree shades only the sensor.**
+Compositing all 178 transits, solar drops 592 → 378 W/m² and temperature does not
+fall (+0.28 ± 0.06 °F, wrong sign) where a 2.9 °F shield would have produced a
+~0.4 °F drop. So the cloud figure was mostly real air cooling. Shield error is
+bounded below **~0.75 °F per 1000 W/m²** and is consistent with zero.
+
+The corollary is that essentially all of the solar-correlated warmth in the
+forecast residual is **real**: the mown open field genuinely runs hotter than a
+grid cell averaging in forest and water. See `shield.py`; the correction is
+opt-in, sized at the upper bound, and unused by default.
+
+Also worth noting: the daily *minimum* occurs at or before sunrise, with the
+house blocking the east, so **frost work is unaffected by any of this** whatever
+the shield turns out to do.
 
 **Rain — fixed in code.** `hourlyrainin` is a trailing 60-minute total, so taking
 its hourly maximum counted the same rainfall in two adjacent clock hours and

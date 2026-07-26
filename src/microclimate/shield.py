@@ -17,16 +17,31 @@ mown open field heats more than a grid cell that averages in forest and water.
 Forecast comparison alone cannot separate the instrument from the site: both
 scale with sunshine.
 
-**Response time settles it.** Filtering out everything slower than 90 minutes
-and regressing the remaining 5-minute wiggles in temperature on those in solar
-radiation gives a peak at a **5-minute lag, worth 2.9 °F per 1000 W/m²**,
-decaying to nothing by 25 minutes. No air mass heats and cools that fast; a
-field has far too much thermal inertia. That timescale is the instrument.
+**A first estimate from cloud shadows was wrong.** Filtering out everything
+slower than 90 minutes and regressing 5-minute wiggles in temperature on those
+in solar radiation gives a peak at a 5-minute lag worth 2.9 °F per 1000 W/m².
+That looked like an instrument response — too fast, it seemed, for a field's
+thermal inertia.
 
-So of the ~8 °F of solar-correlated warmth in the forecast residual, roughly a
-third is the shield and the rest is real: an open mown field genuinely runs
-hotter than a grid cell averaging in forest and water. `DEFAULT_K_F` below is
-the measured 2.9 °F, not a guess.
+**A tree shadow refutes it.** A tree ~15 m southwest of the station clips the
+sensor for a single 5-minute sample around midday, at a fixed bearing, on every
+clear day — 178 such transits are on record. This is the control the cloud
+analysis lacked: **a cloud shades the whole field and cools the air itself,
+while a tree shades only the sensor** and leaves the air blowing past it
+unchanged. Compositing all 178 transits, solar drops 592 → 378 W/m² and
+temperature does *not* fall (+0.28 ± 0.06 °F, the wrong sign). A 2.9 °F/1000
+W/m² shield would have produced a ~0.4 °F drop.
+
+So the cloud-derived figure was mostly **real air cooling**, not instrument
+error. Bounding the shield from the tree transits instead puts it below roughly
+**0.75 °F per 1000 W/m²**, and plausibly near zero. `DEFAULT_K_F` is that upper
+bound, so the correction stays deliberately small; the honest reading is that
+this station's shield error has not been shown to exist at a detectable level.
+
+Caveat on power: a 5-minute perturbation only partly equilibrates the shield, so
+this bounds the *fast* component. A shield with a time constant much longer than
+5 minutes could hide — but that would also contradict the 5-minute lag the cloud
+regression found.
 
 The ventilation term is the part still unpinned. Splitting the same regression
 by wind gives 1.5-1.6 °F per 1000 W/m² across every wind band — no dependence at
@@ -40,10 +55,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# Error at 1000 W/m², degrees F — measured from this station's 5-minute
-# response to cloud shadows (see module docstring). Sits squarely in the 1-2 °C
-# range published for passive shields.
-DEFAULT_K_F = 2.9
+# Error at 1000 W/m², degrees F. This is an *upper bound* from the tree-transit
+# experiment (see module docstring), not a point estimate — the measured effect
+# is consistent with zero. Kept non-zero so the correction is available if a
+# reference sensor later shows a real error, but sized so applying it cannot do
+# much harm.
+DEFAULT_K_F = 0.75
 
 # Ventilation scale in mph: the wind at which the error halves. Passive shields
 # lose most of their error by ~10 mph.

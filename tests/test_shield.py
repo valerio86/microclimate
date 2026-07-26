@@ -31,10 +31,13 @@ def test_missing_values_are_handled_as_calm_and_dark():
     assert errors[1] > 0  # missing wind treated as calm, the worst case
 
 
-def test_magnitude_stays_within_a_plausible_range():
-    # Guards against the fitted-but-implausible k ~ 8 F discussed in shield.py.
+def test_magnitude_respects_the_tree_transit_upper_bound():
+    # The tree-transit experiment found no detectable shield error and bounds it
+    # below ~0.75 F per 1000 W/m². Guards against reinstating the earlier
+    # cloud-derived 2.9 F, which measured real air cooling rather than the
+    # instrument, or the fitted-but-implausible ~8 F.
     worst = shield.radiation_error([1000.0], [0.0])[0]
-    assert 0.5 < worst < 4.0
+    assert 0.0 < worst <= 1.0
 
 
 def test_correct_observations_lowers_daytime_temperature_only():
