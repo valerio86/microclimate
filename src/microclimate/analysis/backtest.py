@@ -33,6 +33,50 @@ import pandas as pd
 # A corrector predicts that error; subtracting it from the forecast corrects it.
 
 
+def seal_holdout(
+    paired: pd.DataFrame, holdout_fraction: float = 0.2
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split off a final period that must not be touched during model selection.
+
+    Cross-validation folds get reused dozens of times while comparing models and
+    tuning them, and every reuse leaks a little information into the choices
+    made. The only defence is a slice of time that nothing has seen: develop
+    against `development`, and score `holdout` once, at the end, after the model
+    is frozen.
+    """
+    frame = paired.sort_values("valid_time")
+    times = pd.to_datetime(frame["valid_time"], utc=True)
+    boundary = times.min() + (times.max() - times.min()) * (1 - holdout_fraction)
+    return frame[times <= boundary].copy(), frame[times > boundary].copy()
+
+
+def walk_forward_folds(
+    paired: pd.DataFrame, n_folds: int = 5, min_train_fraction: float = 0.3
+) -> Iterator[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Expanding-window folds: train on the past, test on what comes next.
+
+    Each fold trains on everything up to a boundary and tests on the following
+    slice, so training data always precedes test data — the shape of the real
+    problem. A single split can flatter or punish a model by luck of which
+    season landed in the test set; several folds make that visible instead.
+    """
+    frame = paired.sort_values("valid_time")
+    times = pd.to_datetime(frame["valid_time"], utc=True)
+    start, end = times.min(), times.max()
+    span = end - start
+
+    first = start + span * min_train_fraction
+    step = (end - first) / n_folds
+
+    for fold in range(n_folds):
+        train_end = first + step * fold
+        test_end = first + step * (fold + 1)
+        train = frame[times <= train_end]
+        test = frame[(times > train_end) & (times <= test_end)]
+        if not train.empty and not test.empty:
+            yield train.copy(), test.copy()
+
+
 def chronological_split(
     paired: pd.DataFrame, train_fraction: float = 0.7, train_end: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -458,3 +502,75 @@ def evaluate(
         "test_end": str(test["valid_time"].max()),
     }
     return pd.DataFrame(rows), info
+
+
+def cross_validate(
+    paired: pd.DataFrame,
+    variable: str = "temp_f",
+    n_folds: int = 5,
+    correctors_factory=None,
+) -> pd.DataFrame:
+    """Score every method across walk-forward folds.
+
+    Returns one row per (method, fold) plus a summary row per method carrying
+    the mean skill and its spread. The spread is the point: a method that wins
+    on average while swinging between +0.3 and −0.1 across folds is not really
+    winning, and a single split would have hidden that.
+
+    `correctors_factory` must return *fresh* correctors per fold — reusing fitted
+    instances would carry one fold's training into the next.
+    """
+    error_column = f"{variable}_error"
+    usable = paired.dropna(subset=[error_column])
+
+    def default_factory() -> list[Corrector]:
+        made: list[Corrector] = [
+            ConstantCorrector(),
+            BucketCorrector(),
+            HarmonicCorrector(),
+            RegimeCorrector(),
+        ]
+        if "recent_error" in usable.columns:
+            made.append(AdaptiveCorrector())
+        return made
+
+    factory = correctors_factory or default_factory
+
+    rows = []
+    for fold, (train, test) in enumerate(walk_forward_folds(usable, n_folds)):
+        raw = test[error_column].to_numpy(dtype=float)
+        reference = _metrics(raw)["mae"]
+        for corrector in factory():
+            corrector.fit(train, error_column)
+            corrected = raw - corrector.predict(test)
+            stats = _metrics(corrected)
+            rows.append(
+                {
+                    "method": corrector.name,
+                    "fold": fold,
+                    "test_start": str(test["valid_time"].min())[:10],
+                    **stats,
+                    "skill": np.nan
+                    if not reference
+                    else 1 - stats["mae"] / reference,
+                }
+            )
+
+    results = pd.DataFrame(rows)
+    if results.empty:
+        return results
+
+    summary = (
+        results.groupby("method")["skill"]
+        .agg(["mean", "std", "min", "max"])
+        .reset_index()
+        .rename(
+            columns={
+                "mean": "skill_mean",
+                "std": "skill_std",
+                "min": "skill_worst",
+                "max": "skill_best",
+            }
+        )
+    )
+    return results, summary

@@ -285,6 +285,56 @@ def backtest(
     _print_frame(shown[["method", "lead_days", "n", "bias", "mae", "rmse", "skill"]])
 
 
+@app.command()
+def crossval(
+    variable: str = typer.Option("temp_f", help="Variable to correct."),
+    folds: int = typer.Option(5, help="Number of walk-forward folds."),
+    holdout: float = typer.Option(
+        0.2, help="Fraction of the record sealed off and never used for selection."
+    ),
+    source: str = typer.Option(DEFAULT_SOURCE, help="Forecast source to score."),
+) -> None:
+    """Compare methods across walk-forward folds, with a sealed final holdout."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    paired = _load_paired(location, source)
+    paired = features.add_lagged_observations(paired, variable=variable)
+    features.assert_no_lookahead(paired, variable=variable)
+
+    development, sealed = backtest_analysis.seal_holdout(paired, holdout)
+    console.print(
+        f"\n[bold]{variable}[/bold] — {folds} walk-forward folds over "
+        f"{str(development['valid_time'].min())[:10]} → "
+        f"{str(development['valid_time'].max())[:10]}"
+    )
+    console.print(
+        f"[dim]Sealed holdout {str(sealed['valid_time'].min())[:10]} → "
+        f"{str(sealed['valid_time'].max())[:10]} ({len(sealed):,} rows) — "
+        f"not used here, and not to be used until a model is frozen.[/dim]\n"
+    )
+
+    results, summary = backtest_analysis.cross_validate(
+        development, variable=variable, n_folds=folds
+    )
+    if results.empty:
+        _fail("Not enough data to build folds.")
+
+    console.print("[bold]Skill per fold[/bold] (versus the raw forecast)")
+    pivot = results.pivot(index="method", columns="fold", values="skill").reset_index()
+    pivot.columns = ["method"] + [f"fold {c}" for c in pivot.columns[1:]]
+    _print_frame(pivot)
+
+    console.print("\n[bold]Across folds[/bold]")
+    _print_frame(summary.sort_values("skill_mean", ascending=False))
+    console.print(
+        "[dim]skill_std is the number to watch: a high mean with a wide spread "
+        "is not a reliable win.[/dim]"
+    )
+
+
 @app.command("frost-skill")
 def frost_skill(
     lead: int = typer.Option(1, help="Forecast lead time in days to assess."),
