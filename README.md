@@ -223,7 +223,37 @@ This is cold-air pooling: on calm nights the surface decouples from the air abov
 and cold air settles; wind mixes it away. The "+2.0 °F overnight" headline is an
 average of +4.6 and −0.2, and describes neither.
 
-### The frost call, verified
+### Rain chance — the strongest result here
+
+Daily probability of measurable rain, scored with the Brier score against
+climatology. Walk-forward folds on ICON at lead 1:
+
+| Fold | Test starts | Days | Base rate | Brier | Skill |
+|---|---|---|---|---|---|
+| 0 | 2024-08-29 | 68 | 29% | 0.181 | +0.13 |
+| 1 | 2025-02-25 | 33 | 55% | 0.117 | +0.53 |
+| 2 | 2025-05-08 | 29 | 48% | 0.194 | +0.22 |
+| 3 | 2025-09-11 | 57 | 33% | 0.139 | +0.37 |
+
+**Mean skill 0.31, standard deviation 0.15, every fold positive.** Compare the
+temperature corrections at 0.06 ± 0.08 with one fold carrying the average: here
+the mean is twice the spread and the worst fold is still clearly useful. On a
+single split it scores 0.44; the cross-validated 0.31 is the number to believe.
+
+Calibration is close to honest — predicted 0.09 against observed 0.09, 0.33
+against 0.33, 0.84 against 0.83. The middle band (0.51 predicted, 0.73 observed,
+n=22) is under-confident, though at that sample size it is about two standard
+errors out and may be nothing.
+
+All of this comes from a deliberately dumb baseline: bucket the forecast total,
+look up how often it actually rained in that bucket. No model. That the simple
+thing works this well is itself the finding — the value is in knowing what ICON's
+numbers *mean at this location*, not in a clever function.
+
+Costs: 445 usable days out of ~940. Winter goes to snow blindness, summer 2025 to
+the gauge blockage, and partial days are dropped rather than half-counted.
+
+## The frost call, verified
 
 `microclimate frost-skill` scores the yes/no decision on held-out nights, which
 is a different question from MAE — a missed frost costs a crop, a false alarm
