@@ -157,10 +157,22 @@ def _history_block(history: dict | None) -> dict:
 
     nights = history.get("nights", pd.DataFrame())
     rain_rows = history.get("rain", pd.DataFrame())
+    curve = history.get("curve", pd.DataFrame())
     key = "night" if "night" in getattr(nights, "columns", []) else "day"
 
     return {
         "summary": {k: _json_safe(v) for k, v in (history.get("summary") or {}).items()},
+        "curve": [
+            {
+                "t": pd.to_datetime(row["valid_time"], utc=True).isoformat(),
+                "raw": _json_safe(row["temp_f_forecast"]),
+                "corrected": _json_safe(row["corrected"]),
+                "actual": _json_safe(row["temp_f_actual"]),
+            }
+            for _, row in curve.iterrows()
+        ]
+        if not curve.empty
+        else [],
         "nights": [
             {
                 "day": _json_safe(row[key]),

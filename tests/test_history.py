@@ -97,3 +97,40 @@ def test_short_history_degrades_gracefully():
 def test_missing_source_is_an_error_not_a_silent_empty():
     with pytest.raises(KeyError):
         history.verification(paired(60), "UTC", "absent", window_days=10)
+
+
+def test_hourly_curve_is_dense_enough_to_read_as_a_line():
+    # The point of the curve: one value per night over 30 days is 30 points,
+    # too few to see anything. Hourly over two weeks is ~336.
+    out = history.verification(paired(120), "UTC", "primary", window_days=90, curve_days=14)
+    curve = out["curve"]
+
+    assert len(curve) > 300, f"expected a dense curve, got {len(curve)} points"
+    assert len(curve) > 5 * len(out["nights"]) / 10
+
+
+def test_curve_covers_only_the_requested_recent_stretch():
+    out = history.verification(paired(120), "UTC", "primary", window_days=90, curve_days=7)
+    span = pd.to_datetime(out["curve"]["valid_time"], utc=True)
+    assert (span.max() - span.min()) <= pd.Timedelta(days=8)
+
+
+def test_curve_carries_all_three_series():
+    curve = history.verification(paired(120), "UTC", "primary")["curve"]
+    for column in ("temp_f_forecast", "temp_f_actual", "corrected"):
+        assert column in curve, column
+        assert curve[column].notna().any()
+
+
+def test_thin_rain_sample_is_flagged_not_presented_as_fact():
+    # A skill score from a handful of wet days is sampling noise; the summary
+    # must say so rather than letting a bad month read as a bad model.
+    out = history.verification(paired(120), "UTC", "primary", window_days=90)
+    summary = out["summary"]
+    if "rain_skill_thin" in summary:
+        assert isinstance(summary["rain_skill_thin"], bool)
+
+
+def test_window_default_is_not_a_month():
+    # Thirty days yielded six wet days and a skill of 0.18 against a true ~0.5.
+    assert history.DEFAULT_WINDOW_DAYS >= 60

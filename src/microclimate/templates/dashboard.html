@@ -124,9 +124,9 @@
 
   <section class="card" id="history-card">
     <h2>How it has been doing</h2>
-    <p class="note">Every prediction below was reconstructed from the archived
-      day-ahead forecast, using models fitted only on data from <em>before</em> this
-      window — so it is genuine out-of-sample verification, not a replay.</p>
+    <p class="note" id="hist-note">Every prediction below was reconstructed from the
+      archived day-ahead forecast, using models fitted only on data from <em>before</em>
+      this window — so it is genuine out-of-sample verification, not a replay.</p>
     <div class="strip" id="score"></div>
     <div class="legend" id="lg-hist"></div>
     <div class="plot"><div id="c-hist"></div></div>
@@ -342,23 +342,47 @@ function render(){
       tiles.push(["Frosts caught", `${s.frost_caught}/${s.frost_nights}`,
         `${s.frost_false_alarms} false alarm${s.frost_false_alarms===1?"":"s"}`]);
     } else if(s.frost_nights===0){
-      tiles.push(["Frosts","none","no frost nights in this window"]);
+      tiles.push(["Frosts","none","no frost nights in this window — nothing to score"]);
     }
     if(s.rain_skill!==undefined && s.rain_skill!==null){
+      const thin = s.rain_skill_thin;
       tiles.push(["Rain skill", s.rain_skill.toFixed(2),
-        `Brier ${s.rain_brier.toFixed(3)} over ${s.rain_days} days`]);
+        thin ? `only ${s.rain_wet_days} wet days — too few to trust`
+             : `${s.rain_wet_days} wet days of ${s.rain_days}`]);
     }
     document.getElementById("score").innerHTML = tiles.map(([k,v,n])=>
       `<div class="now"><div class="k">${k}</div><div class="v">${v}</div>
        <div class="k" style="text-transform:none;letter-spacing:0;margin-top:4px">${n}</div></div>`).join("");
 
+    // Hourly, not nightly: one point per night is 30 points, too few to read
+    // as a line. The statistics below still span the longer window.
+    const hc = H.curve && H.curve.length ? H.curve : null;
+    if(hc){
+      const labels=hc.map(p=>{const d=new Date(p.t);
+        return (d.getHours()===12 && d.getDate()%3===0)
+          ? d.toLocaleDateString(undefined,{day:"numeric",month:"short"}) : null;});
+      lineChart("c-hist",[
+        {name:"Public forecast",colorVar:"--raw",values:hc.map(p=>p.raw),emphasis:false},
+        {name:"Predicted here",colorVar:"--corrected",values:hc.map(p=>p.corrected),emphasis:true},
+        {name:"Actually happened",colorVar:"--good",values:hc.map(p=>p.actual),emphasis:true},
+      ],labels,"°F",hc.map(p=>new Date(p.t).toLocaleString(undefined,
+        {weekday:"short",day:"numeric",month:"short",hour:"numeric"})));
+      const s2=H.summary||{};
+      document.getElementById("hist-note").innerHTML =
+        `Hourly for the last ${s2.curve_days||14} days; the figures above cover `+
+        `${s2.window_days||90} days. Every prediction was reconstructed from the archived `+
+        `day-ahead forecast using models fitted only on data from <em>before</em> the window `+
+        `— genuine out-of-sample verification, not a replay.`;
+    } else {
+      const hl=H.nights;
+      const labels=hl.map((n,i)=> i%5===0 ? fmtDay(n.day).replace(/,.*/,"") : null);
+      lineChart("c-hist",[
+        {name:"Public forecast",colorVar:"--raw",values:hl.map(n=>n.raw),emphasis:false},
+        {name:"Predicted here",colorVar:"--corrected",values:hl.map(n=>n.corrected),emphasis:true},
+        {name:"Actually happened",colorVar:"--good",values:hl.map(n=>n.actual),emphasis:true},
+      ],labels,"°F overnight low",hl.map(n=>fmtDay(n.day)));
+    }
     const hl=H.nights;
-    const labels=hl.map((n,i)=> i%5===0 ? fmtDay(n.day).replace(/,.*/,"") : null);
-    lineChart("c-hist",[
-      {name:"Public forecast",colorVar:"--raw",values:hl.map(n=>n.raw),emphasis:false},
-      {name:"Predicted here",colorVar:"--corrected",values:hl.map(n=>n.corrected),emphasis:true},
-      {name:"Actually happened",colorVar:"--good",values:hl.map(n=>n.actual),emphasis:true},
-    ],labels,"°F overnight low",hl.map(n=>fmtDay(n.day)));
 
     // Table twin, so no value is reachable only by hovering.
     table("t-hist",["Night","Public","Predicted here","Actual","Miss"],
