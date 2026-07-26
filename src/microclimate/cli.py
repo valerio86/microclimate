@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import align, alerts as alerts_module, features, store
+from . import align, alerts as alerts_module, dashboard, features, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
@@ -337,25 +338,19 @@ def crossval(
     )
 
 
-@app.command("alerts")
-def show_alerts(
-    days: int = typer.Option(5, help="How many days ahead to consider."),
-    quiet: bool = typer.Option(
-        False, help="Print nothing when there is nothing to report."
-    ),
-) -> None:
-    """Conditions worth acting on. Silent when there are none."""
-    try:
-        location = Location.from_env()
-    except ConfigError as error:
-        _fail(str(error))
+def _upcoming_context(location: Location, days: int) -> dict:
+    """Everything the alerts and the dashboard both need.
 
+    Fits the temperature corrector and the rain model on stored history, fetches
+    the live run from every model, and shapes it to match what those models were
+    trained on. Shared so the page can never disagree with the alert it explains.
+    """
     model_list = [value.strip() for value in DEFAULT_MODELS.split(",") if value.strip()]
     sources = [f"open-meteo:{model}" for model in model_list]
 
     with store.connect() as conn:
         station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
-        hourly = align.hourly_station(station)
+        station_hourly = align.hourly_station(station)
         paired = {}
         for source in sources:
             stored = conn.execute(
@@ -364,12 +359,12 @@ def show_alerts(
             if stored.empty:
                 _fail(f"No stored forecasts for {source} — run backfill-forecast.")
             paired[source] = align.add_time_features(
-                align.pair(hourly, stored), location.timezone
+                align.pair(station_hourly, stored), location.timezone
             )
+        _, forecast_through, _ = store.coverage(conn, "forecasts", "valid_time")
 
-    primary = paired[sources[0]]
     corrector = backtest_analysis.RegimeCorrector().fit(
-        primary.dropna(subset=["temp_f_error"]), "temp_f_error"
+        paired[sources[0]].dropna(subset=["temp_f_error"]), "temp_f_error"
     )
 
     live = {}
@@ -393,6 +388,7 @@ def show_alerts(
         lambda delta: delta.days
     )
     upcoming["lead_days"] = ahead.clip(lower=0, upper=7)
+    upcoming["corrected"] = upcoming["temp_f_forecast"] - corrector.predict(upcoming)
 
     nights = alerts_module.upcoming_nights(
         upcoming, location.timezone, corrections=corrector.predict(upcoming)
@@ -407,7 +403,68 @@ def show_alerts(
             training, rain_days
         ).clip(0.01, 0.99)
 
-    found = alerts_module.evaluate(nights.head(days), rain_days.head(days))
+    per_model = {}
+    for source, frame in live.items():
+        local = pd.to_datetime(frame["valid_time"], utc=True).dt.tz_convert(
+            location.timezone
+        )
+        per_model[source] = frame.assign(day=local.dt.date).groupby("day")["precip_in"].sum()
+
+    return {
+        "station": station,
+        "nights": nights.head(days),
+        "hourly": upcoming,
+        "rain_days": rain_days.head(days),
+        "per_model": per_model,
+        "forecast_through": forecast_through,
+        "alerts": alerts_module.evaluate(nights.head(days), rain_days.head(days)),
+    }
+
+
+@app.command("dashboard")
+def build_dashboard(
+    days: int = typer.Option(5, help="How many days ahead to show."),
+    open_after: bool = typer.Option(True, "--open/--no-open", help="Open when built."),
+) -> None:
+    """Build the page that explains the alerts."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    context = _upcoming_context(location, days)
+    payload = dashboard.build_payload(
+        station=context["station"],
+        nights=context["nights"],
+        hourly=context["hourly"],
+        rain_days=context["rain_days"],
+        per_model=context["per_model"],
+        alerts=context["alerts"],
+        timezone_name=location.timezone,
+        forecast_through=context["forecast_through"],
+    )
+    destination = dashboard.render(payload, data_dir() / "dashboard.html")
+
+    console.print(f"[green]Built[/green] {destination}")
+    console.print(f"  {len(context['alerts'])} alert(s), {days} days ahead")
+    if open_after:
+        subprocess.run(["open", str(destination)], check=False)
+
+
+@app.command("alerts")
+def show_alerts(
+    days: int = typer.Option(5, help="How many days ahead to consider."),
+    quiet: bool = typer.Option(
+        False, help="Print nothing when there is nothing to report."
+    ),
+) -> None:
+    """Conditions worth acting on. Silent when there are none."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    found = _upcoming_context(location, days)["alerts"]
 
     if not found:
         if not quiet:
@@ -437,6 +494,9 @@ def refresh(
     models: str = typer.Option(DEFAULT_MODELS, help="Models to refresh."),
     quiet: bool = typer.Option(
         False, help="Print only warnings and errors — for scheduled runs."
+    ),
+    build_page: bool = typer.Option(
+        True, "--dashboard/--no-dashboard", help="Rebuild the dashboard afterwards."
     ),
 ) -> None:
     """Bring station readings and forecasts up to date.
@@ -500,6 +560,33 @@ def refresh(
             )
         else:
             say(f"Station current to {station_end:%Y-%m-%d %H:%M} UTC.")
+
+    if build_page:
+        # A failed page must not fail the refresh: the data is already safely
+        # stored, and a scheduled run reporting failure over a rendering problem
+        # would train you to ignore it.
+        try:
+            context = _upcoming_context(location, 5)
+            payload = dashboard.build_payload(
+                station=context["station"],
+                nights=context["nights"],
+                hourly=context["hourly"],
+                rain_days=context["rain_days"],
+                per_model=context["per_model"],
+                alerts=context["alerts"],
+                timezone_name=location.timezone,
+                forecast_through=context["forecast_through"],
+            )
+            dashboard.render(payload, data_dir() / "dashboard.html")
+            say(f"Dashboard rebuilt — {len(context['alerts'])} alert(s).")
+            for alert in context["alerts"]:
+                if alert.severity == "critical":
+                    console.print(f"[red]● {alert}[/red]")
+        except Exception as error:  # noqa: BLE001
+            console.print(
+                f"[yellow]Dashboard build failed ({type(error).__name__}: {error}); "
+                f"data refresh itself succeeded.[/yellow]"
+            )
 
     say(
         f"[green]Refresh complete in {(datetime.now(timezone.utc) - started).seconds}s.[/green]"

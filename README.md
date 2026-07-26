@@ -86,6 +86,26 @@ re-run to continue from the oldest record stored.
 .venv/bin/microclimate status
 ```
 
+## Using it
+
+```bash
+.venv/bin/microclimate alerts
+```
+
+Conditions worth acting on, and silent when there are none. Frost below 34 °F,
+rain at 70% or half an inch, and any night where this site will differ from the
+public forecast by more than 3 °F — the last being the one no off-the-shelf app
+can produce.
+
+```bash
+.venv/bin/microclimate dashboard
+```
+
+Builds `data/dashboard.html`, whose only job is answering *why did it say that*:
+the overnight curve behind a frost warning, the per-model totals behind a rain
+probability, and a panel stating both the verified skill and what the system
+cannot do. Self-contained, opens from disk, rebuilt by `refresh`.
+
 ## Keeping it current
 
 ```bash
