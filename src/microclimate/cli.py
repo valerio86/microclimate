@@ -10,7 +10,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import align, features, store
+from . import align, alerts as alerts_module, features, store
 from .analysis import backtest as backtest_analysis
 from .analysis import bias as bias_analysis
 from .analysis import frost as frost_analysis
@@ -335,6 +335,95 @@ def crossval(
         "[dim]skill_std is the number to watch: a high mean with a wide spread "
         "is not a reliable win.[/dim]"
     )
+
+
+@app.command("alerts")
+def show_alerts(
+    days: int = typer.Option(5, help="How many days ahead to consider."),
+    quiet: bool = typer.Option(
+        False, help="Print nothing when there is nothing to report."
+    ),
+) -> None:
+    """Conditions worth acting on. Silent when there are none."""
+    try:
+        location = Location.from_env()
+    except ConfigError as error:
+        _fail(str(error))
+
+    model_list = [value.strip() for value in DEFAULT_MODELS.split(",") if value.strip()]
+    sources = [f"open-meteo:{model}" for model in model_list]
+
+    with store.connect() as conn:
+        station = conn.execute("SELECT * FROM obs_station ORDER BY ts").df()
+        hourly = align.hourly_station(station)
+        paired = {}
+        for source in sources:
+            stored = conn.execute(
+                "SELECT * FROM forecasts WHERE source = ? ORDER BY valid_time", [source]
+            ).df()
+            if stored.empty:
+                _fail(f"No stored forecasts for {source} — run backfill-forecast.")
+            paired[source] = align.add_time_features(
+                align.pair(hourly, stored), location.timezone
+            )
+
+    primary = paired[sources[0]]
+    corrector = backtest_analysis.RegimeCorrector().fit(
+        primary.dropna(subset=["temp_f_error"]), "temp_f_error"
+    )
+
+    live = {}
+    for model in model_list:
+        with OpenMeteoClient(location, model=model) as client:
+            live[f"open-meteo:{model}"] = client.fetch_upcoming(days + 1)
+
+    # Shape the live forecast to look like the paired frames the corrector was
+    # fitted on, and label each hour with how far ahead it is, since corrections
+    # are fitted per lead time.
+    upcoming = live[sources[0]].rename(
+        columns={
+            "temp_f": "temp_f_forecast",
+            "wind_mph": "wind_mph_forecast",
+            "solar_wm2": "solar_wm2_forecast",
+        }
+    )
+    upcoming = align.add_time_features(upcoming, location.timezone)
+    today = datetime.now(timezone.utc).date()
+    ahead = (pd.to_datetime(upcoming["valid_time"]).dt.date - today).apply(
+        lambda delta: delta.days
+    )
+    upcoming["lead_days"] = ahead.clip(lower=0, upper=7)
+
+    nights = alerts_module.upcoming_nights(
+        upcoming, location.timezone, corrections=corrector.predict(upcoming)
+    )
+
+    training = rain_model.daily_features(
+        paired, location.timezone, primary=sources[0], lead_days=1
+    )
+    rain_days = rain_model.upcoming_features(live, location.timezone)
+    if not rain_days.empty and not training.empty:
+        rain_days["rain_chance"] = rain_model.fit_predict_frozen(
+            training, rain_days
+        ).clip(0.01, 0.99)
+
+    found = alerts_module.evaluate(nights.head(days), rain_days.head(days))
+
+    if not found:
+        if not quiet:
+            console.print("[green]Nothing to report for the next "
+                          f"{days} days.[/green]")
+        return
+
+    colours = {"critical": "red", "warning": "yellow", "info": "cyan"}
+    console.print()
+    for alert in found:
+        colour = colours[alert.severity]
+        console.print(
+            f"[{colour}]● {alert.day:%a %d %b} — {alert.headline}[/{colour}]"
+        )
+        console.print(f"  [dim]{alert.detail}[/dim]")
+    console.print()
 
 
 @app.command()
