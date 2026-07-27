@@ -1,420 +1,140 @@
 # microclimate
 
-Localized weather forecasting for a location that public forecasts get wrong.
+Localized weather forecasting for a place that public forecasts get wrong.
 
-Off-the-shelf forecasts predict for a **grid cell**, which knows nothing about
-the terrain, elevation, and microclimates of a specific property. This project
-uses a personal weather station as ground truth to measure and correct that
-error — the same idea as Model Output Statistics (MOS), fit to one location.
+Off-the-shelf forecasts predict for a **grid cell**, which knows nothing about the
+terrain and elevation of one property. This uses a personal weather station as
+ground truth to measure and correct that error, and surfaces only the results
+that survived verification.
 
-## Sources
+Station: Ambient WS-2902 at 42.19 N, 75.41 W, 534 m, on an 8 ft mast in an open
+field. Forecasts: Open-Meteo (ICON, ECMWF, GFS).
 
-| Source | Role | Backfill window |
-|---|---|---|
-| Ambient Weather WS-2902 (via AWN cloud API) | ground truth observations | 2024-01-01 → now |
-| Open-Meteo forecast archive | the public forecast baseline | 2024-01-01 → now |
-| PurpleAir | air quality | from 2026-07-24 (install date) |
+## What it does
 
-The station has recorded since 2022 and Ambient still serves that history, but
-**2024-01-01 is a data-quality boundary, not a convenience one**: the station
-was not correctly configured for its first couple of years, so the earlier
-readings are unreliable. Bad ground truth is worse than none here — it would
-bias the corrections while still looking plausible in aggregate. Widen the
-window only if that early data is revisited and validated.
+**Alerts** — silent unless something is actionable:
 
-The WS-2902 has no local API — readings are read back from Ambient's cloud, at
-288 records (one day) per request.
+- **Frost** when the corrected overnight minimum is at or below 34 °F
+- **Rain** at 70% chance or half an inch
+- **Deviation** when this site will differ from the public forecast by over 3 °F
 
-The key enabler is Open-Meteo's **previous-runs API**: for any past hour it
-returns what the model predicted 1–7 days beforehand. That means the
-`(forecast, actual)` training pairs can be reconstructed from data that already
-exists, rather than accumulated going forward.
+**A dashboard** whose only job is answering *why did it say that* — the overnight
+curve behind a frost warning, per-model totals behind a rain probability, a
+verification panel showing how right it has been, and a statement of what it
+cannot do.
 
-## Plan
-
-- **Phase 1 — collect.** Backfill station history and matching forecasts into
-  DuckDB. *(this scaffold)*
-- **Phase 2 — measure.** Quantify the error: by variable, hour of day, season,
-  and lead time. Often actionable on its own.
-- **Phase 3 — correct.** Start with conditional-mean bias correction as the
-  baseline, then ML once it has to be beaten.
-- **Phase 4 — serve.** Web dashboard, then possibly a native iPhone app.
-
-## Setup
+## Quick start
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev,analysis]"
 ```
 
 ```bash
-cp .env.example .env
-```
-
-Fill in `.env`:
-
-- `AMBIENT_API_KEY`, `AMBIENT_APPLICATION_KEY` — ambientweather.net → Account → API Keys
-- `AMBIENT_MAC` — run `microclimate devices` to list yours
-- `LATITUDE`, `LONGITUDE`, `ELEVATION_M`, `TIMEZONE` — elevation matters; it stops
-  Open-Meteo from using the grid cell's mean height, a large bias in hilly terrain
-- `PURPLEAIR_API_KEY`, `PURPLEAIR_SENSOR_INDEX` — optional for now
-
-`.env` and `data/` are gitignored.
-
-## Usage
-
-```bash
-.venv/bin/microclimate devices
+cp .env.example .env    # then fill in keys and location
 ```
 
 ```bash
 .venv/bin/microclimate backfill-station --start 2024-01-01
 ```
 
-Walks backward through history at ~1 request/second (Ambient's rate limit), so
-roughly 17 minutes for the ~940 days back to 2024. It is resumable — interrupt it freely and
-re-run to continue from the oldest record stored.
-
 ```bash
 .venv/bin/microclimate backfill-forecast --start 2024-01-01
 ```
 
+Then daily use:
+
 ```bash
-.venv/bin/microclimate bias --variable temp_f --by local_hour --lead 1
+.venv/bin/microclimate refresh      # update data, rebuild the page
 ```
 
 ```bash
-.venv/bin/microclimate status
+.venv/bin/microclimate alerts       # anything worth acting on?
 ```
-
-## Using it
 
 ```bash
-.venv/bin/microclimate alerts
+open data/dashboard.html
 ```
 
-Conditions worth acting on, and silent when there are none. Frost below 34 °F,
-rain at 70% or half an inch, and any night where this site will differ from the
-public forecast by more than 3 °F — the last being the one no off-the-shelf app
-can produce.
+`scripts/com.microclimate.refresh.plist` runs `refresh` at 06:15 daily on macOS.
+Install instructions are in the file.
 
-```bash
-.venv/bin/microclimate dashboard
-```
+## Headline results
 
-Builds `data/dashboard.html`, whose only job is answering *why did it say that*:
-the overnight curve behind a frost warning, the per-model totals behind a rain
-probability, and a panel stating both the verified skill and what the system
-cannot do. Self-contained, opens from disk, rebuilt by `refresh`.
+All measured on data the models never saw during fitting.
 
-## Keeping it current
+| | |
+|---|---|
+| **Rain chance** | Brier skill **0.41 ± 0.15** across folds, **0.52** on sealed data |
+| **Frost** | warning at 34 °F caught **14 of 14** on held-out marginal nights |
+| **Model choice** | ICON **2.33 °F** MAE vs GFS 2.82 — bigger win than any correction |
+| **Temperature correction** | skill **0.06 ± 0.08** — real but modest, mostly a summer effect |
 
-```bash
-.venv/bin/microclimate refresh
-```
+**What it cannot do:** wind (the anemometer reads about half), snow (an unheated
+gauge misses it), air quality (PurpleAir needs a winter first), hourly shower
+timing (convective cells miss a point sensor).
 
-Brings station readings and forecasts up to date in about 20 seconds. Recent
-forecast days are always refetched rather than only the missing ones: the
-previous-runs archive fills in longer lead times over the following days, so a
-day collected immediately has only its short leads and must be collected again.
+## Detailed findings
 
-It warns loudly when the newest station reading is over six hours old, because
-staleness is the failure that hides — every command keeps working, quietly
-answering from older and older data.
+Kept out of this file so it stays readable. Load one when it is relevant.
 
-To run it daily, see `scripts/com.microclimate.refresh.plist` (macOS launchd,
-06:15 local, logs to `data/refresh.log`). Install instructions are in the file.
+| Document | Covers |
+|---|---|
+| [docs/findings-models.md](docs/findings-models.md) | Why ICON over GFS, the lead-1/lead-2 discontinuity, cross-validated correction skill, regime conditioning |
+| [docs/findings-rain.md](docs/findings-rain.md) | The rain-chance target, snow blindness, the frozen three-feature model, why three features beat fifteen |
+| [docs/findings-frost.md](docs/findings-frost.md) | Frost verification as a decision, why 34 °F, hit and false-alarm rates |
+| [docs/findings-instruments.md](docs/findings-instruments.md) | Radiation shield, the 90-day gauge blockage, pyranometer obstructions, the anemometer, alignment caveats |
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `refresh` | Update data and rebuild the page. Warns if the station has gone quiet. |
+| `alerts` | Conditions worth acting on. |
+| `dashboard` | Build `data/dashboard.html`. |
+| `rain-forecast` | Rain chance for the days ahead. |
+| `rain-health` | Check the gauge for blockages. |
+| `crossval` | Compare correction methods across walk-forward folds. |
+| `backtest` | Score corrections on held-out data. |
+| `frost-skill` | Score the frost call on held-out nights. |
+| `bias` | Where the public forecast is wrong here. |
+| `status` | What data is stored. |
 
 ## Layout
 
 ```
 src/microclimate/
-  config.py          environment + location config
-  store.py           DuckDB schema and upserts
-  align.py           5-min observations → hourly, paired with forecasts
-  sources/
-    ambient.py       AWN client, backward-walking history pagination
-    openmeteo.py     forecast archive + previous-runs (lead-resolved)
-    purpleair.py     air quality
-  analysis/
-    bias.py          error statistics and conditional-mean correction
+  config.py      environment and location
+  store.py       DuckDB schema, upserts, migrations
+  align.py       5-min observations to hourly, paired with forecasts
+  features.py    leakage-safe lagged observations
+  alerts.py      the three alert rules
+  history.py     out-of-sample verification
+  dashboard.py   page assembly
+  shield.py      radiation-shield correction (opt-in)
+  sources/       ambient, openmeteo, purpleair clients
+  analysis/      bias, backtest, frost, rain, rain_model
 ```
 
 ## Conventions
 
-- All timestamps stored as UTC; local time is derived at query time.
-- Error sign is **forecast − actual**: positive means the public forecast runs
-  high here.
-- Wind direction is averaged circularly — a plain mean of 350° and 10° gives
-  180°, the opposite of the right answer.
+- Timestamps stored as UTC; local time derived at query time.
+- Error sign is **forecast − actual**: positive means the forecast reads high.
+- Wind direction averages circularly — a plain mean of 350° and 10° gives 180°.
+- Forecast sources are stored side by side; `--source` selects one.
+- Data quality boundaries are encoded in code, not remembered: the 2024 backfill
+  floor, `rain.GAUGE_OUTAGES`, and the snow filter.
 
-## Early findings
+## Principles worth keeping
 
-From the first 8 months of paired data (Nov 2025 – Jul 2026, 5,676 hours),
-before the full 2024+ backfill:
+Learned the hard way over the course of building this.
 
-- **Wind is the big one.** Open-Meteo runs ~+6.8 mph on sustained wind and
-  ~+12.5 mph on gusts, consistently at every lead time. That is the signature
-  of a sheltered site being compared against open-terrain 10 m wind.
-- **Temperature bias is diurnal, and the daily average hides it.** Near-zero
-  mean error at lead 1, but a steady +1.1 to +1.5 °F overnight — the model runs
-  warm at night, consistent with cold-air drainage in hilly terrain.
-- **Error grows and flips sign with lead time**, from +0.65 °F at lead 0 to
-  −2.65 °F at lead 7.
-
-## Pick the model before correcting it
-
-Open-Meteo's `best_match` resolves to **GFS** at this location, and GFS is the
-worst of the four models here. Scored against the station, lead 1:
-
-| Model | MAE | Lead 1 → 2 bias |
-|---|---|---|
-| icon_seamless | **2.33 °F** | +0.73 → +0.48 |
-| gem_seamless | 2.42 °F | +0.80 → +0.76 |
-| ecmwf_ifs025 | 2.48 °F | −0.61 → −0.82 |
-| best_match / GFS | 2.82 °F | +0.02 → **−1.78** |
-
-That last column also explains the lead-1 to lead-2 discontinuity that looked
-like a data artifact: it is GFS drifting, and no other model does it.
-
-The two effects compose. At lead 1, raw GFS is 2.80 °F MAE and 2.50 corrected;
-raw ICON is 2.34 and **2.10 corrected** — a 25% total reduction, two-thirds of
-which came from naming a model rather than from any modelling.
-
-Models are stored side by side (`forecasts.source` is part of the key), so their
-disagreement is available as an uncertainty feature. Analysis commands take
-`--source` and default to ICON.
-
-## How much does correcting help, really?
-
-`microclimate crossval` runs five expanding-window folds and seals off a final
-holdout. It is a much harsher test than a single split, and the corrections do
-not survive it well.
-
-On ICON, across folds:
-
-| Method | skill mean | skill std | worst fold | best fold |
-|---|---|---|---|---|
-| regime | +0.06 | 0.08 | +0.02 | +0.20 |
-| adaptive | +0.06 | 0.08 | +0.01 | +0.20 |
-| harmonic | +0.05 | 0.07 | −0.01 | +0.16 |
-| buckets | +0.03 | 0.08 | −0.02 | +0.17 |
-| constant | +0.01 | 0.01 | −0.00 | +0.02 |
-
-**The spread exceeds the mean.** Nearly all the benefit comes from one fold —
-summer 2025 — which matches the seasonal picture: a large correctable warm bias
-in July and August, very little the rest of the year. It is mostly a *summer*
-correction, and single-split numbers of 0.10-0.11 were the luck of which period
-landed in the test set.
-
-On GFS the same methods are actively harmful: regime averages **−0.06** with a
-worst fold of **−0.58**, harmonic −0.11 and −0.76. Flexible corrections fitted to
-a model whose bias is unstable transfer badly, and only the crude ones (buckets,
-constant) stay near zero. The lesson is not that correction never works but that
-**it is worth far less than choosing the right model, and it is not free** — on
-the wrong baseline it destroys skill.
-
-The adaptive lag features (`recent_error`, persistence gap, trend) added nothing
-over the regime model. A negative result, but a real one: ICON's errors here are
-not autocorrelated day-to-day in a way a linear term can exploit.
-
-## Does correcting actually help?
-
-`microclimate backtest` fits corrections on an earlier period and scores them on
-a later one they never saw. Skill is versus the raw forecast: positive helped,
-negative made it worse. Fitted on 2024-01 → 2025-10, scored on 2025-10 → 2026-07.
-
-| Variable | Raw MAE | Corrected MAE | Skill | Persistence |
-|---|---|---|---|---|
-| Temperature (lead 1) | 2.80 °F | 2.59 °F | **+0.07** | −1.60 |
-| Wind (lead 1) | 7.73 mph | 2.65 mph | **+0.66** | **+0.72** |
-
-Three things this settled that reasoning could not:
-
-- **A single mean correction makes day-ahead temperature *worse*** (skill −0.03).
-  The seasonal and diurnal structure is the whole signal; the average of it is
-  actively misleading. The headline numbers above are summary statistics, not a
-  model.
-- **The harmonic fit matches the bucket table with 13 coefficients instead of
-  288 cells**, and edges ahead across all leads. Fewer parameters, same skill,
-  far less to overfit.
-- **For wind, plain persistence beats every correction we have.** Yesterday's
-  wind at this hour predicts today's better than a bias-corrected grid forecast
-  does. The +7 mph offset is real and worth removing, but past that the forecast
-  adds little for wind at this site. Temperature is the opposite — persistence
-  is far worse than the forecast, so the model genuinely knows something.
-
-### Regime conditioning
-
-Calendar position is only a proxy for the physics. Conditioning on the forecast's
-own cloud cover and wind speed — both known ahead of time — beats calendar alone
-(temperature lead 1: MAE 2.50 vs 2.59, skill 0.10 vs 0.07), and the mechanism
-holds up when inspected directly:
-
-| Overnight conditions | Temperature bias | n |
-|---|---|---|
-| Clear + calm | **+4.58 °F** | 666 |
-| Cloudy + calm | +2.66 °F | 754 |
-| Clear + windy | −0.72 °F | 98 |
-| Cloudy + windy | −0.19 °F | 1,172 |
-
-This is cold-air pooling: on calm nights the surface decouples from the air above
-and cold air settles; wind mixes it away. The "+2.0 °F overnight" headline is an
-average of +4.6 and −0.2, and describes neither.
-
-### Rain chance — the strongest result here
-
-Daily probability of measurable rain, scored with the Brier score against
-climatology. Walk-forward folds on ICON at lead 1:
-
-| Fold | Test starts | Days | Base rate | Brier | Skill |
-|---|---|---|---|---|---|
-| 0 | 2024-08-29 | 68 | 29% | 0.181 | +0.13 |
-| 1 | 2025-02-25 | 33 | 55% | 0.117 | +0.53 |
-| 2 | 2025-05-08 | 29 | 48% | 0.194 | +0.22 |
-| 3 | 2025-09-11 | 57 | 33% | 0.139 | +0.37 |
-
-**Mean skill 0.31, standard deviation 0.15, every fold positive.** Compare the
-temperature corrections at 0.06 ± 0.08 with one fold carrying the average: here
-the mean is twice the spread and the worst fold is still clearly useful. On a
-single split it scores 0.44; the cross-validated 0.31 is the number to believe.
-
-Calibration is close to honest — predicted 0.09 against observed 0.09, 0.33
-against 0.33, 0.84 against 0.83. The middle band (0.51 predicted, 0.73 observed,
-n=22) is under-confident, though at that sample size it is about two standard
-errors out and may be nothing.
-
-All of this comes from a deliberately dumb baseline: bucket the forecast total,
-look up how often it actually rained in that bucket. No model. That the simple
-thing works this well is itself the finding — the value is in knowing what ICON's
-numbers *mean at this location*, not in a clever function.
-
-Costs: 445 usable days out of ~940. Winter goes to snow blindness, summer 2025 to
-the gauge blockage, and partial days are dropped rather than half-counted.
-
-### The learned model: three features beat fifteen
-
-Scored once on the sealed holdout (109 days, 2026-03-08 to 2026-07-25, never
-touched during selection):
-
-| Method | Brier | Skill |
-|---|---|---|
-| climatology | 0.251 | −0.01 |
-| amount lookup (baseline) | 0.136 | +0.45 |
-| **logistic, 3 features** | **0.120** | **+0.52** |
-| logistic, all 15 features | 0.134 | +0.46 |
-
-The three features are **how many of the three models forecast rain, their mean
-total, and their spread** — nothing else. Model agreement is very nearly the
-whole signal, and `model_spread_in` enters negative: when the models disagree,
-rain is less likely.
-
-Two of my predictions died here. **Convective share** was supposed to be the key
-discriminator for whether a shower lands on a point sensor; removing it changes
-the score not at all. And **gradient boosting** was supposed to beat logistic
-regression; on 336 training days it does not (+0.33 against +0.39 across folds).
-
-Calibration on the holdout is good at the extremes (0.75 predicted / 0.74
-observed, 0.90 / 0.95) and **under-confident in the middle**: 0.44 predicted
-against 0.65 observed. When this model says 45%, treat it as nearer 60%.
-
-Note the holdout scores higher than cross-validation (+0.52 against +0.41 mean).
-The holdout is one favourable period; **+0.41 ± 0.15 is the number to plan with**.
-
-## The frost call, verified
-
-`microclimate frost-skill` scores the yes/no decision on held-out nights, which
-is a different question from MAE — a missed frost costs a crop, a false alarm
-costs an evening.
-
-Across all 255 held-out nights the raw forecast is already good (92% of frosts
-caught, 1% false alarms). The interesting case is the 44 **marginal** nights
-where the forecast minimum lands between 32 and 40 °F, 14 of which froze:
-
-| Warning level | Raw | Corrected |
-|---|---|---|
-| 32 °F | 4 hits, **10 misses** | 8 hits, 6 misses |
-| 34 °F | 13 hits, 1 miss, 2 false alarms | **14 hits, 0 misses**, 5 false alarms |
-| 36 °F | 14 hits, 12 false alarms | 14 hits, 13 false alarms |
-
-**Taking the 32 °F line literally misses most marginal frosts.** Warning at 34 °F
-fixes nearly all of it on its own; the correction closes the remainder and
-improves the underlying estimate (overnight-minimum bias +1.37 → +0.59 °F, MAE
-2.32 → 1.86 on marginal nights).
-
-An earlier note here framed this as "a coin flip at 36 °F". That was an
-hour-level statistic — comparing a single hour's forecast against whether frost
-occurred at any point overnight — and it overstated the miss rate. The nightly
-minimum is far more informative than any single hour, and the night-level
-numbers above supersede it.
-
-### Instrument corrections
-
-Ground truth has to be trusted before anything is fitted to it. Three defects
-found, in decreasing order of how well they are pinned down:
-
-**Temperature — no detectable radiation-shield error.** Cloud-shadow analysis
-initially suggested 2.9 °F per 1000 W/m² at a 5-minute lag, which looked like an
-instrument response. A tree ~15 m from the station overturned it. The tree clips
-the sensor for one 5-minute sample at a fixed bearing on every clear day (178
-transits on record), and it is the control the cloud analysis lacked: **a cloud
-shades the whole field and cools the air; a tree shades only the sensor.**
-Compositing all 178 transits, solar drops 592 → 378 W/m² and temperature does not
-fall (+0.28 ± 0.06 °F, wrong sign) where a 2.9 °F shield would have produced a
-~0.4 °F drop. So the cloud figure was mostly real air cooling. Shield error is
-bounded below **~0.75 °F per 1000 W/m²** and is consistent with zero.
-
-The corollary is that essentially all of the solar-correlated warmth in the
-forecast residual is **real**: the mown open field genuinely runs hotter than a
-grid cell averaging in forest and water. See `shield.py`; the correction is
-opt-in, sized at the upper bound, and unused by default.
-
-Also worth noting: the daily *minimum* occurs at or before sunrise, with the
-house blocking the east, so **frost work is unaffected by any of this** whatever
-the shield turns out to do.
-
-**Rain — fixed in code.** `hourlyrainin` is a trailing 60-minute total, so taking
-its hourly maximum counted the same rainfall in two adjacent clock hours and
-inflated station totals to roughly twice the forecast. Rain is now differenced
-from the daily accumulator. Station/forecast went from 1.99 to 0.61, which reads
-as ordinary gauge under-catch: 0.71 in spring and summer, **0.29 in winter**,
-where an unheated tipping bucket does not register snow until it melts. Treat
-winter precipitation volume as unusable.
-
-**Solar — the pyranometer is obstructed, mostly to the east.** Comparing clear-sky
-ratios at *matched solar elevation* (equal air mass, so any east/west gap is
-obstruction rather than geometry) over 21 clear days:
-
-| Solar elevation | Morning (E) | Afternoon (W) | Gap |
-|---|---|---|---|
-| 15–20° | 0.23 | 0.66 | +0.43 |
-| 20–25° | 0.32 | 0.74 | +0.42 |
-| 45–50° | 0.93 | 0.84 | −0.10 |
-| 55–60° | 0.82 | 0.82 | 0.00 |
-
-Mornings below 25° elevation get a third to a half of the afternoon equivalent —
-a hill or treeline on the eastern horizon. A smaller, broad afternoon deficit
-also shows at mid elevations. So **observed solar under-reports true insolation**,
-and part of the apparent "model over-forecasts solar radiation" is our own shaded
-sensor. Corrections use *forecast* solar, so they are unaffected; do not use
-observed `solar_wm2` as a model feature without accounting for this.
-
-**Wind — see below.** Unresolved, and the reason the shield's ventilation term
-is still a literature value rather than a measured one.
-
-### Open question: the anemometer reads about half
-
-The station sits on an 8 ft mast in an open field. The log wind profile puts the
-expected ratio to Open-Meteo's 10 m wind at **0.69–0.80**. Observed is **0.28**,
-and **0.35 even above 15 mph** where a start-up threshold is irrelevant; gusts
-read 0.34, and the highest gust in 2.5 years is 32 mph. Siting does not explain a
-shortfall that size — worth a physical check of the cups and bearing before
-trusting any wind correction.
-
-## Caveats
-
-- Hourly alignment assumes Open-Meteo's hourly values line up with the
-  station's hourly aggregates. Instantaneous variables (temperature) are a
-  close match; accumulations (precipitation) are attributed to the preceding
-  hour and are worth validating before trusting precipitation error stats.
-- `rain_hourly_in` from the station is a trailing-60-minute total, approximated
-  here by the hourly maximum.
+1. **Check the baseline before modelling.** Switching from GFS to ICON beat every
+   correction fitted on top of it, and cost one parameter.
+2. **Single splits flatter.** Every result that looked good on one split shrank
+   under walk-forward folds — often by a factor of three.
+3. **Simpler kept winning.** Three features beat fifteen; logistic beat gradient
+   boosting; a lookup table beat the regime model.
+4. **Ground truth is the bottleneck.** A blocked gauge, a shaded pyranometer and a
+   half-reading anemometer each mattered more than any modelling choice.
+5. **Physical facts beat inference.** Several confident statistical conclusions
+   were corrected by a single sentence about the actual site.
