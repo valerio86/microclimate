@@ -168,6 +168,7 @@ def _history_block(history: dict | None) -> dict:
                 "raw": _json_safe(row["temp_f_forecast"]),
                 "corrected": _json_safe(row["corrected"]),
                 "actual": _json_safe(row["temp_f_actual"]),
+                "rain": _json_safe(row.get("rain_in")),
             }
             for _, row in curve.iterrows()
         ]

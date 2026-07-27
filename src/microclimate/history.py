@@ -84,8 +84,10 @@ def verification(
         ].copy()
         if not recent.empty:
             recent["corrected"] = recent["temp_f_forecast"] - corrector.predict(recent)
+            if "rain_in" not in recent.columns:
+                recent["rain_in"] = np.nan
             curve = recent[
-                ["valid_time", "temp_f_forecast", "temp_f_actual", "corrected"]
+                ["valid_time", "temp_f_forecast", "temp_f_actual", "corrected", "rain_in"]
             ].sort_values("valid_time")
 
     # --- rain: probability against outcome ---

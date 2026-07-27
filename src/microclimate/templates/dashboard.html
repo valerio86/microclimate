@@ -129,7 +129,7 @@
       this window — so it is genuine out-of-sample verification, not a replay.</p>
     <div class="strip" id="score"></div>
     <div class="legend" id="lg-hist"></div>
-    <div class="plot"><div id="c-hist"></div></div>
+    <div class="plot"><div id="c-hist"></div><div id="c-hist-rain"></div></div>
     <button class="tbl-toggle" data-for="t-hist">Show table</button>
     <div id="t-hist" hidden></div>
     <p class="note" id="rain-record" style="margin-top:12px"></p>
@@ -214,6 +214,59 @@ function lineChart(mount, series, labels, unit, tipLabels){
   function leave(){cross.setAttribute("opacity",0);dots.forEach(c=>c.setAttribute("opacity",0));hideTip();}
   svg.addEventListener("mousemove",move);
   svg.addEventListener("mouseleave",leave);
+  host.appendChild(svg);
+}
+
+/* Rain as its own panel beneath the temperature chart, sharing the x geometry
+   exactly. Deliberately NOT a second y-axis on the same plot: the alignment
+   between two scales is arbitrary, so wherever the lines crossed would look
+   meaningful while meaning nothing. Stacked panels give the same reading —
+   "it rained here, and the temperature dropped" — without inventing that. */
+function rainStrip(mount, values, labels, tipLabels){
+  const host=document.getElementById(mount); host.innerHTML="";
+  // l and r match lineChart exactly so the x-axes align; t leaves room for the
+  // unit caption to sit above the top tick rather than across it.
+  const W=760,H=104,M={t:26,r:14,b:26,l:44};
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img"});
+  const n=values.length;
+  const present=values.filter(v=>v!==null&&v!==undefined);
+  const peak=Math.max(0.05, ...present);
+  const X=i=>M.l+i*(W-M.l-M.r)/(n-1), Y=v=>M.t+(peak-v)*(H-M.t-M.b)/peak;
+
+  [0,peak].forEach(t=>{
+    svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(t),y2:Y(t),
+      stroke:t===0?cv("--axis"):cv("--grid"),"stroke-width":t===0?1.5:1}));
+    const l=el("text",{x:M.l-7,y:Y(t)+4,"text-anchor":"end",fill:cv("--muted"),"font-size":10.5});
+    l.textContent=t.toFixed(2);svg.appendChild(l);});
+  const yl=el("text",{x:2,y:11,"text-anchor":"start",fill:cv("--muted"),"font-size":10.5});
+  yl.textContent="observed rain, inches per hour";svg.appendChild(yl);
+
+  const bw=Math.max(1.2,(W-M.l-M.r)/n*0.8);
+  let wet=0;
+  values.forEach((v,i)=>{
+    if(!v||v<=0)return; wet++;
+    svg.appendChild(el("rect",{x:X(i)-bw/2,y:Y(v),width:bw,height:Math.max(1,Y(0)-Y(v)),
+      fill:cv("--m1"),rx:0.5}));
+  });
+  if(!wet){
+    const t=el("text",{x:(M.l+W-M.r)/2,y:(M.t+Y(0))/2+4,"text-anchor":"middle",
+      fill:cv("--muted"),"font-size":11});
+    t.textContent="no measurable rain in this period";svg.appendChild(t);
+  }
+
+  const hit=el("rect",{x:M.l,y:M.t,width:W-M.l-M.r,height:H-M.t-M.b,fill:"transparent"});
+  svg.appendChild(hit);
+  const cross=el("line",{y1:M.t,y2:Y(0),stroke:cv("--axis"),"stroke-width":1,opacity:0});
+  svg.appendChild(cross);
+  svg.addEventListener("mousemove",ev=>{
+    const r=svg.getBoundingClientRect();
+    let i=Math.round((((ev.clientX-r.left)/r.width*W)-M.l)/(W-M.l-M.r)*(n-1));
+    i=Math.max(0,Math.min(n-1,i));
+    cross.setAttribute("x1",X(i));cross.setAttribute("x2",X(i));cross.setAttribute("opacity",1);
+    showTip(ev,(tipLabels&&tipLabels[i])||"",[{name:"Rain",colour:cv("--m1"),
+      value:(values[i]||0).toFixed(2)+" in"}]);
+  });
+  svg.addEventListener("mouseleave",()=>{cross.setAttribute("opacity",0);hideTip();});
   host.appendChild(svg);
 }
 
@@ -367,6 +420,9 @@ function render(){
         {name:"Actually happened",colorVar:"--good",values:hc.map(p=>p.actual),emphasis:true},
       ],labels,"°F",hc.map(p=>new Date(p.t).toLocaleString(undefined,
         {weekday:"short",day:"numeric",month:"short",hour:"numeric"})));
+      rainStrip("c-hist-rain", hc.map(p=>p.rain), labels,
+        hc.map(p=>new Date(p.t).toLocaleString(undefined,
+          {weekday:"short",day:"numeric",month:"short",hour:"numeric"})));
       const s2=H.summary||{};
       document.getElementById("hist-note").innerHTML =
         `Hourly for the last ${s2.curve_days||14} days; the figures above cover `+
