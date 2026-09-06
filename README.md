@@ -7,8 +7,8 @@ terrain and elevation of one property. This uses a personal weather station as
 ground truth to measure and correct that error, and surfaces only the results
 that survived verification.
 
-Station: Ambient WS-2902 at 42.19 N, 75.41 W, 534 m, on an 8 ft mast in an open
-field. Forecasts: Open-Meteo (ICON, ECMWF, GFS).
+Station: Ambient WS-2902 at Valerio's farmhouse in Delaware County, on an 8 ft
+mast in an open field. Forecasts: Open-Meteo (ICON, ECMWF, GFS).
 
 ## What it does
 
