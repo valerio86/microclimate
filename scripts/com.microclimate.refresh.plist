@@ -18,6 +18,11 @@
 
   WorkingDirectory matters: .env and data/ are both resolved relative to it.
   If the Mac is asleep at the scheduled time, launchd runs the job on wake.
+
+  After refreshing, this also publishes data/dashboard.html to the gh-pages
+  branch (https://valerio86.github.io/microclimate/) via
+  refresh_and_publish.sh / publish_pages.sh. That push uses the ambient git
+  credentials, same as any other `git push` from this machine.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -28,9 +33,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/valerio/Development/microclimate/.venv/bin/microclimate</string>
-        <string>refresh</string>
-        <string>--quiet</string>
+        <string>/Users/valerio/Development/microclimate/scripts/refresh_and_publish.sh</string>
     </array>
 
     <key>WorkingDirectory</key>

@@ -22,3 +22,4 @@ build/
 # macOS
 .DS_Store
 reports/
+.gh-pages-worktree/
