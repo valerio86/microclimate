@@ -89,6 +89,31 @@
   .trust .cannot { color:var(--ink-2); }
   .stale { color:var(--critical); font-weight:600; }
   footer { color:var(--muted); font-size:0.78rem; margin-top:24px; }
+
+  .tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .tab { background:none; border:1px solid var(--ring); color:var(--ink-2); border-radius:8px;
+    padding:7px 14px; font-size:0.85rem; cursor:pointer; font-family:inherit; font-weight:560;
+    min-height:34px; }
+  .tab.active { background:var(--surface); color:var(--ink); border-color:var(--axis); }
+
+  .days { display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:10px; }
+  .day-card { background:var(--surface); border:1px solid var(--ring); border-radius:10px;
+    padding:12px 10px; cursor:pointer; text-align:center; }
+  .day-card.open { border-color:var(--corrected); }
+  .day-card .dow { font-size:0.78rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+  .day-card .icon { font-size:1.8rem; margin:5px 0 3px; line-height:1; }
+  .day-card .temps { font-size:1.02rem; font-weight:650; }
+  .day-card .temps .lo { color:var(--muted); font-weight:500; margin-left:3px; }
+  .day-card .rain { font-size:0.76rem; color:var(--m2); margin-top:5px; font-weight:600; }
+  .day-card .rain .vol { color:var(--muted); font-weight:500; }
+  .frost-pill { display:inline-block; margin-top:7px; font-size:0.68rem; font-weight:650;
+    color:#fff; padding:2px 9px; border-radius:999px; }
+  .day-detail { background:var(--surface); border:1px solid var(--ring); border-radius:10px;
+    padding:14px 16px; margin-top:12px; font-size:0.85rem; color:var(--ink-2); }
+  .day-detail .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
+    gap:10px; margin-top:8px; }
+  .day-detail .k { font-size:0.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em; }
+  .day-detail .v { font-size:0.95rem; color:var(--ink); font-weight:600; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -97,6 +122,27 @@
   <p class="sub" id="sub"></p>
 
   <div class="strip" id="strip"></div>
+
+  <div class="tabs">
+    <button class="tab" data-view="simple">Overview</button>
+    <button class="tab" data-view="advanced">Advanced</button>
+  </div>
+
+  <div id="view-simple">
+    <section class="card">
+      <h2>Next 5 days</h2>
+      <p class="note">Temperature adjusted for this property. Bars are the day's most
+        likely rain total — the same model behind the rain chance below.</p>
+      <div class="legend" id="lg-simple"></div>
+      <div class="plot"><div id="c-simple"></div></div>
+    </section>
+    <section class="card">
+      <div class="days" id="days"></div>
+      <div class="day-detail" id="day-detail" hidden></div>
+    </section>
+  </div>
+
+  <div id="view-advanced" hidden>
 
   <section class="card">
     <h2>Worth acting on</h2>
@@ -142,6 +188,8 @@
     <p class="note" style="margin-top:12px"><strong>What it cannot tell you:</strong></p>
     <ul class="cannot" id="cannot"></ul>
   </section>
+
+  </div>
 
   <footer id="foot"></footer>
 </div>
@@ -215,6 +263,144 @@ function lineChart(mount, series, labels, unit, tipLabels){
   svg.addEventListener("mousemove",move);
   svg.addEventListener("mouseleave",leave);
   host.appendChild(svg);
+}
+
+/* The landing chart: one panel, two y-scales sharing the same pixel band —
+   temperature (left, blue) and each day's rain total (right, orange). A real
+   dual axis, chosen deliberately for this glanceable view even though the
+   advanced rain panel below avoids it: axis labels are colored to match their
+   series so which scale belongs to which line never has to be inferred, and
+   the exact numbers are also on the day cards beneath, never only in the
+   chart. */
+function comboChart(mount, curve, daily){
+  const host=document.getElementById(mount); host.innerHTML="";
+  if(!curve.length || !daily.length){host.innerHTML='<p class="note">No forecast data.</p>';return;}
+  const W=760,H=300,M={t:16,r:46,b:34,l:40};
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img"});
+  const temps=curve.map(p=>p.corrected).filter(v=>v!==null);
+  if(!temps.length){host.innerHTML='<p class="note">No forecast data.</p>';return;}
+  let lo=Math.min(...temps),hi=Math.max(...temps);const pad=(hi-lo)*0.14||1;lo-=pad;hi+=pad;
+  const tk=ticks(lo,hi);lo=Math.min(lo,tk[0]);hi=Math.max(hi,tk[tk.length-1]);
+  const n=curve.length;
+  const X=i=>M.l+i*(W-M.l-M.r)/(n-1), Y=v=>M.t+(hi-v)*(H-M.t-M.b)/(hi-lo);
+
+  const rHi=Math.max(0.2,...daily.map(d=>d.rain_in||0))*1.15;
+  const Y2=v=>M.t+(rHi-v)*(H-M.t-M.b)/rHi;
+
+  // Local calendar day per hourly point, to align day-wide rain bars and
+  // separators to the same x geometry the temperature line uses.
+  const dayIdx=curve.map(p=>new Date(p.t).toLocaleDateString("en-CA"));
+  const spanOf=day=>{const idxs=[];dayIdx.forEach((dd,i)=>{if(dd===day)idxs.push(i);});return idxs;};
+
+  tk.forEach(t=>{
+    svg.appendChild(el("line",{x1:M.l,x2:W-M.r,y1:Y(t),y2:Y(t),stroke:cv("--grid"),"stroke-width":1}));
+    const l=el("text",{x:M.l-7,y:Y(t)+4,"text-anchor":"end",fill:cv("--corrected"),"font-size":11});
+    l.textContent=Math.round(t);svg.appendChild(l);});
+  const yl=el("text",{x:2,y:M.t-4,"text-anchor":"start",fill:cv("--corrected"),"font-size":10.5});
+  yl.textContent="°F";svg.appendChild(yl);
+
+  ticks(0,rHi,4).forEach(t=>{
+    const l=el("text",{x:W-M.r+8,y:Y2(t)+4,"text-anchor":"start",fill:cv("--m2"),"font-size":11});
+    l.textContent=t.toFixed(2);svg.appendChild(l);});
+  const yl2=el("text",{x:W-2,y:M.t-4,"text-anchor":"end",fill:cv("--m2"),"font-size":10.5});
+  yl2.textContent="in rain";svg.appendChild(yl2);
+
+  daily.forEach(d=>{
+    const idxs=spanOf(d.day); if(!idxs.length)return;
+    const x0=X(Math.min(...idxs)),x1=X(Math.max(...idxs)),v=d.rain_in||0;
+    svg.appendChild(el("rect",{x:x0+2,y:Y2(v),width:Math.max(2,x1-x0-4),
+      height:Math.max(0,Y2(0)-Y2(v)),fill:cv("--m2"),opacity:0.5,rx:3}));
+    const cx=(x0+x1)/2;
+    const lab=el("text",{x:cx,y:H-M.b+18,"text-anchor":"middle",fill:cv("--muted"),"font-size":11});
+    lab.textContent=fmtDay(d.day).split(",")[0];svg.appendChild(lab);
+  });
+  let lastDay=null;
+  dayIdx.forEach((dd,i)=>{if(dd!==lastDay){if(lastDay!==null)
+    svg.appendChild(el("line",{x1:X(i),x2:X(i),y1:M.t,y2:H-M.b,stroke:cv("--grid"),"stroke-width":1}));
+    lastDay=dd;}});
+
+  let path="",pen=false;
+  curve.forEach((p,i)=>{if(p.corrected===null){pen=false;return;}
+    path+=(pen?"L":"M")+X(i).toFixed(1)+","+Y(p.corrected).toFixed(1)+" ";pen=true;});
+  svg.appendChild(el("path",{d:path,fill:"none",stroke:cv("--corrected"),"stroke-width":2.6,
+    "stroke-linejoin":"round","stroke-linecap":"round"}));
+
+  const cross=el("line",{y1:M.t,y2:H-M.b,stroke:cv("--axis"),"stroke-width":1,opacity:0});
+  svg.appendChild(cross);
+  const dot=el("circle",{r:4.5,fill:cv("--corrected"),stroke:cv("--surface"),"stroke-width":2,opacity:0});
+  svg.appendChild(dot);
+  const hit=el("rect",{x:M.l,y:M.t,width:W-M.l-M.r,height:H-M.t-M.b,fill:"transparent"});
+  svg.appendChild(hit);
+  hit.addEventListener("mousemove",ev=>{
+    const r=svg.getBoundingClientRect();
+    let i=Math.round((((ev.clientX-r.left)/r.width*W)-M.l)/(W-M.l-M.r)*(n-1));
+    i=Math.max(0,Math.min(n-1,i));
+    cross.setAttribute("x1",X(i));cross.setAttribute("x2",X(i));cross.setAttribute("opacity",1);
+    const v=curve[i].corrected;
+    if(v===null){dot.setAttribute("opacity",0);}else{
+      dot.setAttribute("cx",X(i));dot.setAttribute("cy",Y(v));dot.setAttribute("opacity",1);}
+    const day=daily.find(d=>d.day===dayIdx[i]);
+    const rows=[{name:"Temperature",colour:cv("--corrected"),value:v===null?"—":v.toFixed(1)+" °F"}];
+    if(day)rows.push({name:"Rain",colour:cv("--m2"),
+      value:(day.rain_in||0).toFixed(2)+" in · "+(day.rain_chance===null?"—":Math.round(day.rain_chance*100)+"%")});
+    showTip(ev,new Date(curve[i].t).toLocaleString(undefined,
+      {weekday:"short",day:"numeric",month:"short",hour:"numeric"}),rows);
+  });
+  hit.addEventListener("mouseleave",()=>{cross.setAttribute("opacity",0);dot.setAttribute("opacity",0);hideTip();});
+  host.appendChild(svg);
+}
+
+const WEATHER_EMOJI={clear:"☀️","partly-cloudy":"⛅",cloudy:"☁️",fog:"🌫️",
+  drizzle:"🌦️",rain:"🌧️",snow:"❄️",storm:"⛈️"};
+
+function renderDays(daily){
+  const box=document.getElementById("days");
+  if(!daily.length){box.innerHTML='<p class="note">No forecast data.</p>';return;}
+  box.innerHTML=daily.map(d=>{
+    const icon=WEATHER_EMOJI[d.icon]||"🌡️";
+    const hi=d.max_f===null?"—":Math.round(d.max_f)+"°";
+    const lo=d.min_f===null?"—":Math.round(d.min_f)+"°";
+    const chance=d.rain_chance===null?null:Math.round(d.rain_chance*100);
+    const vol=d.rain_in && d.rain_in>=0.01?`<span class="vol"> · ${d.rain_in.toFixed(2)} in</span>`:"";
+    const frost=d.frost?`<div class="frost-pill" style="background:var(--${d.frost})">Frost</div>`:"";
+    return `<div class="day-card" data-day="${d.day}">
+      <div class="dow">${fmtDay(d.day).split(",")[0]}</div>
+      <div class="icon">${icon}</div>
+      <div class="temps">${hi}<span class="lo">${lo}</span></div>
+      <div class="rain">${chance===null?"—":chance+"%"}${vol}</div>
+      ${frost}
+    </div>`;
+  }).join("");
+  box.querySelectorAll(".day-card").forEach(card=>{
+    card.addEventListener("click",()=>{
+      const wasOpen=card.classList.contains("open");
+      box.querySelectorAll(".day-card").forEach(c=>c.classList.remove("open"));
+      const detail=document.getElementById("day-detail");
+      if(wasOpen){detail.hidden=true;return;}
+      card.classList.add("open");
+      showDayDetail(card.dataset.day);
+    });
+  });
+}
+
+function showDayDetail(day){
+  const detail=document.getElementById("day-detail");
+  const hours=D.curve.filter(p=>new Date(p.t).toLocaleDateString("en-CA")===day);
+  if(!hours.length){detail.hidden=true;return;}
+  const pick=key=>hours.map(h=>h[key]).filter(v=>v!==null&&v!==undefined);
+  const range=arr=>arr.length?`${Math.round(Math.min(...arr))}–${Math.round(Math.max(...arr))}`:"—";
+  const avg=arr=>arr.length?Math.round(arr.reduce((a,b)=>a+b,0)/arr.length):null;
+  const dew=pick("dewpoint_f"), wind=pick("wind_mph"), gust=pick("gust_mph"), cloud=pick("cloud_cover");
+  const tiles=[
+    ["Dew point", dew.length?range(dew)+" °F":"—"],
+    ["Wind", wind.length?range(wind)+" mph":"—"],
+    ["Gusts to", gust.length?Math.round(Math.max(...gust))+" mph":"—"],
+    ["Cloud cover", cloud.length?avg(cloud)+"% avg":"—"],
+  ];
+  detail.innerHTML=`<div class="note" style="margin:0">${fmtDay(day)} — hourly detail. Raw model output,`+
+    ` not locally corrected.</div><div class="grid">`+
+    tiles.map(([k,v])=>`<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("")+`</div>`;
+  detail.hidden=false;
 }
 
 /* Rain as its own panel beneath the temperature chart, sharing the x geometry
@@ -342,6 +528,13 @@ function render(){
         <div class="when">${fmtDay(a.day)}</div>
         <div class="detail">${a.detail}</div></div></div>`).join("");
   }
+
+  comboChart("c-simple", D.curve, D.daily);
+  document.getElementById("lg-simple").innerHTML =
+    `<span><i class="sw" style="background:var(--corrected)"></i>Temperature (adjusted)</span>
+     <span><i class="sw" style="background:var(--m2)"></i>Rain</span>`;
+  renderDays(D.daily);
+  document.getElementById("day-detail").hidden = true;
 
   // Temperature: the corrected line is the claim, the public forecast recedes.
   const curve=D.curve;
@@ -477,6 +670,19 @@ function render(){
     "Corrections fitted on this location's own history.";
 }
 render();
+
+function setView(view){
+  document.getElementById("view-simple").hidden = view!=="simple";
+  document.getElementById("view-advanced").hidden = view!=="advanced";
+  document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active", b.dataset.view===view));
+  try{ localStorage.setItem("microclimate-view", view); }catch(e){}
+}
+document.querySelectorAll(".tab").forEach(button=>{
+  button.addEventListener("click",()=>setView(button.dataset.view));
+});
+let startView="simple";
+try{ startView = localStorage.getItem("microclimate-view") || "simple"; }catch(e){}
+setView(startView);
 
 document.querySelectorAll(".tbl-toggle").forEach(button=>{
   button.addEventListener("click",()=>{

@@ -18,6 +18,29 @@ import pandas as pd
 
 TEMPLATE = Path(__file__).parent / "templates" / "dashboard.html"
 
+# WMO weather code -> a small icon vocabulary the page knows how to draw.
+# This is the raw model's own classification, not a locally-corrected one —
+# unlike the frost and rain calls, nothing here has been verified against the
+# station, so the landing page must not present it with the same confidence.
+WEATHER_ICONS = {
+    0: "clear", 1: "clear",
+    2: "partly-cloudy",
+    3: "cloudy",
+    45: "fog", 48: "fog",
+    51: "drizzle", 53: "drizzle", 55: "drizzle", 56: "drizzle", 57: "drizzle",
+    61: "rain", 63: "rain", 65: "rain", 66: "rain", 67: "rain",
+    80: "rain", 81: "rain", 82: "rain",
+    71: "snow", 73: "snow", 75: "snow", 77: "snow", 85: "snow", 86: "snow",
+    95: "storm", 96: "storm", 99: "storm",
+}
+
+
+def _weather_icon(code) -> str | None:
+    if code is None or code != code:  # NaN != NaN
+        return None
+    return WEATHER_ICONS.get(int(round(code)), "cloudy")
+
+
 # Verified numbers, shown on the page so the reader knows how far to trust it.
 TRUST = {
     "rain": "Brier skill 0.41 ± 0.15 across walk-forward folds; 0.52 on sealed data.",
@@ -99,6 +122,12 @@ def build_payload(
                 .isoformat(),
                 "raw": _json_safe(row["temp_f_forecast"]),
                 "corrected": _json_safe(row["corrected"]),
+                # Uncorrected model output — the day-zoom detail, not a claim.
+                "dewpoint_f": _json_safe(row.get("dewpoint_f")),
+                "wind_mph": _json_safe(row.get("wind_mph_forecast")),
+                "gust_mph": _json_safe(row.get("gust_mph")),
+                "cloud_cover": _json_safe(row.get("cloud_cover")),
+                "weather_code": _json_safe(row.get("weather_code")),
             }
         )
 
@@ -119,6 +148,16 @@ def build_payload(
             }
         )
 
+    night_rows = [
+        {
+            "day": _json_safe(row["day"]),
+            "raw_min": _json_safe(row["raw_min"]),
+            "corrected_min": _json_safe(row["corrected_min"]),
+        }
+        for _, row in nights.iterrows()
+    ]
+    daily = _daily_summary(hourly, timezone_name, night_rows, rain, alerts)
+
     return {
         "generated": now.astimezone().isoformat(),
         "timezone": timezone_name,
@@ -135,19 +174,68 @@ def build_payload(
             }
             for alert in alerts
         ],
-        "nights": [
-            {
-                "day": _json_safe(row["day"]),
-                "raw_min": _json_safe(row["raw_min"]),
-                "corrected_min": _json_safe(row["corrected_min"]),
-            }
-            for _, row in nights.iterrows()
-        ],
+        "nights": night_rows,
         "curve": curve,
         "rain": rain,
+        "daily": daily,
         "history": _history_block(history),
         "trust": TRUST,
     }
+
+
+def _daily_summary(
+    hourly: pd.DataFrame,
+    timezone_name: str,
+    night_rows: list[dict],
+    rain: list[dict],
+    alerts: list,
+) -> list[dict]:
+    """One card's worth of numbers per day, for the landing page.
+
+    The overnight low is `night_rows`' own `corrected_min` — the same number
+    the frost alert is built from — rather than a fresh calendar-day minimum,
+    so this card can never show a different low than the alert above it
+    explains. The high and the day-type icon have no existing verified
+    counterpart, so they are computed fresh from the hourly corrected curve
+    and the raw model's `weather_code`, respectively.
+    """
+    if hourly.empty:
+        return []
+
+    local = pd.to_datetime(hourly["valid_time"], utc=True).dt.tz_convert(timezone_name)
+    by_day = hourly.assign(_day=local.dt.date.map(lambda d: d.isoformat()), _hour=local.dt.hour)
+    groups = {day: group for day, group in by_day.groupby("_day")}
+
+    lows = {row["day"]: row["corrected_min"] for row in night_rows}
+    # Severity, not a bare flag, so the day card's badge is drawn from the same
+    # `--critical`/`--warning` tokens the alert above it already uses — it can
+    # color the same night differently only by disagreeing about the fact.
+    frost_severity = {_json_safe(alert.day): alert.severity for alert in alerts if alert.kind == "frost"}
+
+    out = []
+    for r in rain:  # `rain` already carries exactly the requested day window
+        day = r["day"]
+        group = groups.get(day)
+        max_f, icon = None, None
+        if group is not None:
+            corrected = group["corrected"].dropna()
+            if not corrected.empty:
+                max_f = _json_safe(corrected.max())
+            if "weather_code" in group.columns and group["_hour"].notna().any():
+                rep = group.loc[(group["_hour"] - 14).abs().idxmin()]
+                icon = _weather_icon(rep.get("weather_code"))
+        out.append(
+            {
+                "day": day,
+                "min_f": lows.get(day),
+                "max_f": max_f,
+                "icon": icon,
+                "rain_chance": r["chance"],
+                "rain_in": r["mean_in"],
+                "frost": frost_severity.get(day),
+            }
+        )
+    return out
 
 
 def _history_block(history: dict | None) -> dict:
