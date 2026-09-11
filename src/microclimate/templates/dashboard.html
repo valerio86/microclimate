@@ -59,6 +59,7 @@
   .quiet { color:var(--good); font-weight:550; }
 
   .legend { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:8px; }
+  #lg-simple { margin-top:12px; margin-bottom:0; }
   .legend span { display:inline-flex; align-items:center; gap:6px; font-size:0.78rem; color:var(--ink-2); }
   .sw { width:14px; height:3px; border-radius:2px; }
   .plot { overflow-x:auto; }
@@ -132,11 +133,8 @@
 
   <div id="view-simple">
     <section class="card">
-      <h2>Next 5 days</h2>
-      <p class="note">Temperature adjusted for this property. Bars are the day's most
-        likely rain total — the same model behind the rain chance below.</p>
-      <div class="legend" id="lg-simple"></div>
       <div class="plot"><div id="c-simple"></div></div>
+      <div class="legend" id="lg-simple"></div>
     </section>
     <section class="card">
       <div class="days" id="days"></div>
